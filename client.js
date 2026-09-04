@@ -328,6 +328,8 @@ function apply(ctx) {
        later is in its temporal dead zone during apply() — and `typeof` does NOT
        protect against a TDZ ReferenceError the way it does for an undeclared name. */
     let contourSyncHook = () => {}
+    let bgImageSyncHook = () => {}
+    let navBgImageSyncHook = () => {}
     /* The bundle can be evaluated before <body> exists (the same window runLoader
        defends with a DOMContentLoaded deferral). The old code created the observer
        only when body was already there and never retried, so an early-boot apply
@@ -344,6 +346,8 @@ function apply(ctx) {
         // fires on every DOM change on the page, including every streaming token,
         // so the hook's first act is an O(1) "still attached?" check.
         contourSyncHook()
+        bgImageSyncHook()
+        navBgImageSyncHook()
       })
       watermarkObserver.observe(document.body, { childList: true, subtree: true })
     }
@@ -352,6 +356,8 @@ function apply(ctx) {
       if (watermarkObserver === null) return
       syncWatermarkVisibility()
       contourSyncHook()
+      bgImageSyncHook()
+      navBgImageSyncHook()
     }
     if (typeof document !== 'undefined' && document.body !== null) installWatermarkObserver()
     else if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
@@ -1476,7 +1482,19 @@ function apply(ctx) {
           wrap.appendChild(line)
           contourLineCv = line
           // First child: keeps the layer at the bottom of the frame's paint order.
-          if (host.firstChild) host.insertBefore(wrap, host.firstChild)
+          // If a custom background image is also mounted, keep it BELOW the contour
+          // lines by inserting the contour after the image layer (DOM order decides
+          // the paint order for two same-z-index siblings).
+          let bgImageSibling = null
+          for (let i = 0; i < host.childNodes.length; i++) {
+            const n = host.childNodes[i]
+            if (n.nodeType === 1 && n.getAttribute && n.getAttribute('data-endfield-bg-image') !== null) {
+              bgImageSibling = n.nextSibling
+              break
+            }
+          }
+          if (bgImageSibling !== null) host.insertBefore(wrap, bgImageSibling)
+          else if (host.firstChild) host.insertBefore(wrap, host.firstChild)
           else host.appendChild(wrap)
           contourWrap = wrap
           contourHost = host
@@ -1536,6 +1554,243 @@ function apply(ctx) {
     }
     // Let the page observer declared above re-attach the layer as the app renders.
     contourSyncHook = syncContour
+
+    /* ---------- custom background image (settings-toggleable, default OFF) ------
+       A user-supplied image layer behind the whole app. It is deliberately the same
+       mounting strategy as the contour sheet, so it shares every one of the contour
+       notes about the app frame: a child of the frame with inset:0 / z-index:0,
+       painted above the frame's own background and below every positioned
+       descendant. The frame's descendant fills are neutralised to transparent only
+       while this layer is mounted (the :has() guard in the stylesheet makes the
+       rules a no-op the moment it is removed).
+
+       Readability is handled by a scrim overlay, not by leaving content opaque:
+       the mask is a colour-mix of the app's own bg-base, so it washes the image
+       toward whatever surface the UI text was designed on and adapts to both the
+       light and dark schemes. It is user-adjustable from 0 (raw image) to 90%. */
+    const BG_IMAGE_ON_KEY = 'dsh-theme-endfield-bg-image-on'
+    const BG_IMAGE_URL_KEY = 'dsh-theme-endfield-bg-image-url'
+    const BG_IMAGE_MASK_KEY = 'dsh-theme-endfield-bg-image-mask'
+    const BG_IMAGE_FIT_KEY = 'dsh-theme-endfield-bg-image-fit'
+    const BG_IMAGE_MASK_DEFAULT = 55
+    /* Stable body class while the global full-page image is active. This is what
+       owns the background transparency (especially the sidebar) instead of
+       relying only on transient DOM/:has() state, so the nav does not flicker
+       or only reveal the image on hover. */
+    const BG_ACTIVE_CLASS = 'theme-endfield-bg-on'
+    const BG_IMAGE_MASK_MIN = 0
+    const BG_IMAGE_MASK_MAX = 90
+    const BG_IMAGE_FIT_OPTIONS = ['cover', 'contain']
+    // Default OFF (=== '1'): a full-bleed image layer is opt-in decoration.
+    const isBgImageOn = () => (typeof localStorage !== 'undefined' && localStorage.getItem(BG_IMAGE_ON_KEY)) === '1'
+    const readBgImageUrl = () => {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(BG_IMAGE_URL_KEY) : null
+      return typeof raw === 'string' ? raw.trim() : ''
+    }
+    const readBgImageMask = () => {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(BG_IMAGE_MASK_KEY) : null
+      if (raw === null || raw === '') return BG_IMAGE_MASK_DEFAULT
+      const value = Number(raw)
+      if (!Number.isFinite(value)) return BG_IMAGE_MASK_DEFAULT
+      return Math.min(BG_IMAGE_MASK_MAX, Math.max(BG_IMAGE_MASK_MIN, Math.round(value)))
+    }
+    const readBgImageFit = () => {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(BG_IMAGE_FIT_KEY) : null
+      return BG_IMAGE_FIT_OPTIONS.indexOf(raw) !== -1 ? raw : 'cover'
+    }
+    const syncBgImageActiveClass = () => {
+      if (typeof document === 'undefined' || document.body === null) return
+      const on = isEnabled() && isBgImageOn() && readBgImageUrl() !== ''
+      if (on) document.body.classList.add(BG_ACTIVE_CLASS)
+      else document.body.classList.remove(BG_ACTIVE_CLASS)
+      /* Also set the transparency inline on the concrete layout containers.
+         This keeps the sidebar and other columns transparent even if a hover /
+         quietBars / class-toggling rule would otherwise re-opaque them. */
+      const transparentSelectors = [
+        '[class$="_sidebarCol"]',
+        '[class$="_sidebarCol"] [class$="_root"]',
+        '[class$="_centerCol"]',
+        '[class$="_detailsCol"]',
+        '[class$="_detailsCol"] [class$="_root"]',
+        '[data-phase]',
+      ]
+      for (const selector of transparentSelectors) {
+        document.querySelectorAll(selector).forEach((el) => {
+          if (on) el.style.backgroundColor = 'transparent'
+          else el.style.backgroundColor = ''
+        })
+      }
+    }
+
+    /* ---------- navigation overlay background image (independent layer) ------
+       An optional second image layer that covers only the left navigation /
+       sidebar column (sidebarCol). When disabled it is not mounted at all, so the
+       global full-page image shows through the (already transparent) sidebar.
+       When enabled it paints above the global image inside the sidebar and has
+       its own opacity + scrim controls so the "New Session / Settings" labels
+       remain readable. */
+    const NAV_BG_IMAGE_ON_KEY = 'dsh-theme-endfield-nav-bg-image-on'
+    const NAV_BG_IMAGE_URL_KEY = 'dsh-theme-endfield-nav-bg-image-url'
+    const NAV_BG_IMAGE_OPACITY_KEY = 'dsh-theme-endfield-nav-bg-image-opacity'
+    const NAV_BG_IMAGE_MASK_KEY = 'dsh-theme-endfield-nav-bg-image-mask'
+    const NAV_BG_IMAGE_FIT_KEY = 'dsh-theme-endfield-nav-bg-image-fit'
+    const NAV_BG_IMAGE_OPACITY_DEFAULT = 100
+    const NAV_BG_IMAGE_OPACITY_MIN = 0
+    const NAV_BG_IMAGE_OPACITY_MAX = 100
+    const NAV_BG_IMAGE_MASK_DEFAULT = 65
+    const NAV_BG_IMAGE_MASK_MIN = 0
+    const NAV_BG_IMAGE_MASK_MAX = 90
+    const NAV_BG_IMAGE_FIT_OPTIONS = ['cover', 'contain']
+    const isNavBgImageOn = () => (typeof localStorage !== 'undefined' && localStorage.getItem(NAV_BG_IMAGE_ON_KEY)) === '1'
+    const readNavBgImageUrl = () => {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(NAV_BG_IMAGE_URL_KEY) : null
+      return typeof raw === 'string' ? raw.trim() : ''
+    }
+    const readNavBgImageOpacity = () => {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(NAV_BG_IMAGE_OPACITY_KEY) : null
+      if (raw === null || raw === '') return NAV_BG_IMAGE_OPACITY_DEFAULT
+      const value = Number(raw)
+      if (!Number.isFinite(value)) return NAV_BG_IMAGE_OPACITY_DEFAULT
+      return Math.min(NAV_BG_IMAGE_OPACITY_MAX, Math.max(NAV_BG_IMAGE_OPACITY_MIN, Math.round(value)))
+    }
+    const readNavBgImageMask = () => {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(NAV_BG_IMAGE_MASK_KEY) : null
+      if (raw === null || raw === '') return NAV_BG_IMAGE_MASK_DEFAULT
+      const value = Number(raw)
+      if (!Number.isFinite(value)) return NAV_BG_IMAGE_MASK_DEFAULT
+      return Math.min(NAV_BG_IMAGE_MASK_MAX, Math.max(NAV_BG_IMAGE_MASK_MIN, Math.round(value)))
+    }
+    const readNavBgImageFit = () => {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(NAV_BG_IMAGE_FIT_KEY) : null
+      return NAV_BG_IMAGE_FIT_OPTIONS.indexOf(raw) !== -1 ? raw : 'cover'
+    }
+
+    let bgImageWrap = null
+    let bgImageHost = null
+
+    const bgImageTeardown = () => {
+      if (bgImageWrap !== null && bgImageWrap.parentNode) bgImageWrap.parentNode.removeChild(bgImageWrap)
+      bgImageWrap = null
+      bgImageHost = null
+    }
+    /* CSSOM is used for the dynamic parts (image URL, fit, mask) so the stylesheet
+       only has to define the geometry and the mount-time guards. The wrapper carries
+       no text, so the same translation-proofing as the wordmark is unnecessary; it
+       is aria-hidden because it is decorative. */
+    const applyBgImageStyles = () => {
+      if (bgImageWrap === null) return
+      const url = readBgImageUrl()
+      const mask = readBgImageMask()
+      const fit = readBgImageFit()
+      /* Only touch the DOM when a value actually changed: this runs on every page
+         mutation through the observer, so the common path must be a string compare,
+         not a layout/style write. */
+      const nextImage = url !== '' ? `url("${url}")` : 'none'
+      if (bgImageWrap.style.backgroundImage !== nextImage) bgImageWrap.style.backgroundImage = nextImage
+      const nextMask = mask + '%'
+      if (bgImageWrap.style.getPropertyValue('--edge-bg-mask') !== nextMask) bgImageWrap.style.setProperty('--edge-bg-mask', nextMask)
+      if (bgImageWrap.style.getPropertyValue('--edge-bg-fit') !== fit) bgImageWrap.style.setProperty('--edge-bg-fit', fit)
+    }
+
+    /** Build/refresh/remove the global (whole-page) background layer. */
+    const syncBgImage = () => {
+      syncBgImageActiveClass()
+      const on = isEnabled() && isBgImageOn() && readBgImageUrl() !== ''
+      if (!on) {
+        if (bgImageWrap !== null) bgImageTeardown()
+        return
+      }
+      const attached = bgImageWrap !== null && bgImageHost !== null
+        && bgImageWrap.parentNode === bgImageHost && bgImageHost.isConnected
+      if (attached) {
+        applyBgImageStyles()
+        return
+      }
+      const host = findAppFrame()
+      if (host === null) {
+        // Frame not rendered yet; a later mutation will retry through the hooks.
+        if (bgImageWrap !== null) bgImageTeardown()
+        return
+      }
+      if (bgImageWrap !== null && bgImageHost !== host) bgImageTeardown()
+      if (bgImageWrap === null) {
+        const wrap = document.createElement('div')
+        wrap.setAttribute('data-endfield-bg-image', '')
+        wrap.setAttribute('aria-hidden', 'true')
+        /* First child keeps the image at the bottom of the frame's paint order;
+           if the contour sheet is also mounted, the image sits beneath the
+           contour lines rather than covering them. */
+        if (host.firstChild) host.insertBefore(wrap, host.firstChild)
+        else host.appendChild(wrap)
+        bgImageWrap = wrap
+        bgImageHost = host
+      }
+      applyBgImageStyles()
+    }
+
+    bgImageSyncHook = syncBgImage
+
+    let navBgImageWrap = null
+    let navBgImageHost = null
+
+    const findNavBgImageHost = () => {
+      if (typeof document === 'undefined') return null
+      return document.querySelector('[class$="_sidebarCol"]') || document.querySelector('[class*="_sidebarCol"]')
+    }
+
+    const navBgImageTeardown = () => {
+      if (navBgImageWrap !== null && navBgImageWrap.parentNode) navBgImageWrap.parentNode.removeChild(navBgImageWrap)
+      navBgImageWrap = null
+      navBgImageHost = null
+    }
+
+    const applyNavBgImageStyles = () => {
+      if (navBgImageWrap === null) return
+      const url = readNavBgImageUrl()
+      const opacity = readNavBgImageOpacity()
+      const mask = readNavBgImageMask()
+      const fit = readNavBgImageFit()
+      const nextImage = url !== '' ? `url("${url}")` : 'none'
+      if (navBgImageWrap.style.backgroundImage !== nextImage) navBgImageWrap.style.backgroundImage = nextImage
+      const nextOpacity = String(opacity / 100)
+      if (navBgImageWrap.style.opacity !== nextOpacity) navBgImageWrap.style.opacity = nextOpacity
+      const nextMask = mask + '%'
+      if (navBgImageWrap.style.getPropertyValue('--edge-nav-mask') !== nextMask) navBgImageWrap.style.setProperty('--edge-nav-mask', nextMask)
+      if (navBgImageWrap.style.getPropertyValue('--edge-nav-fit') !== fit) navBgImageWrap.style.setProperty('--edge-nav-fit', fit)
+    }
+
+    /** Build/refresh/remove the navigation overlay background layer. */
+    const syncNavBgImage = () => {
+      const on = isEnabled() && isNavBgImageOn() && readNavBgImageUrl() !== ''
+      if (!on) {
+        if (navBgImageWrap !== null) navBgImageTeardown()
+        return
+      }
+      const attached = navBgImageWrap !== null && navBgImageHost !== null
+        && navBgImageWrap.parentNode === navBgImageHost && navBgImageHost.isConnected
+      if (attached) {
+        applyNavBgImageStyles()
+        return
+      }
+      const host = findNavBgImageHost()
+      if (host === null) {
+        if (navBgImageWrap !== null) navBgImageTeardown()
+        return
+      }
+      if (navBgImageWrap !== null && navBgImageHost !== host) navBgImageTeardown()
+      if (navBgImageWrap === null) {
+        const wrap = document.createElement('div')
+        wrap.setAttribute('data-endfield-nav-bg-image', '')
+        wrap.setAttribute('aria-hidden', 'true')
+        if (host.firstChild) host.insertBefore(wrap, host.firstChild)
+        else host.appendChild(wrap)
+        navBgImageWrap = wrap
+        navBgImageHost = host
+      }
+      applyNavBgImageStyles()
+    }
+
+    navBgImageSyncHook = syncNavBgImage
 
     /* ---------- boot loading screen (settings-toggleable, default OFF) ----------
        Recreates the Endfield launcher boot screen: a full-viewport black plate with
@@ -2407,6 +2662,192 @@ function apply(ctx) {
         background: linear-gradient(180deg,
           rgba(0, 0, 0, 0) 0px,
           color-mix(in srgb, var(--dsw-alias-bg-base) 82%, transparent) 36px) !important;
+      }
+      /* ================= custom background image =================
+         Same mounting contract as the contour sheet: an inset:0 / z-index:0 child
+         of the app frame, painted above the frame's own background and below every
+         positioned descendant. The background-size/fit and scrim strength are set
+         as CSS custom properties from JS so the stylesheet only owns geometry.
+
+         The scrim uses the app's own bg-base rather than a fixed black/white veil,
+         because the app's text colours are designed against that base: washing the
+         image toward it keeps both light and dark UI readable. The user controls
+         the wash strength via the settings slider (---edge-bg-mask). */
+      [data-endfield-bg-image] {
+        position: absolute;
+        inset: 0;
+        /* 0 + the frame-child lift rule below puts this layer above the frame's
+           own background but behind the real content, without needing an
+           isolation/stacking-context trap on the frame. */
+        z-index: 0;
+        pointer-events: none;
+        overflow: hidden;
+        background-position: center;
+        background-repeat: no-repeat;
+        background-size: var(--edge-bg-fit, cover);
+      }
+      /* The scrim is a separate absolutely-positioned layer, not the wrapper's own
+         background: the wrapper's background is the image itself, so the veil has
+         to paint on top of it. Pointer events stay off on both. */
+      [data-endfield-bg-image]::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: color-mix(in srgb, var(--dsw-alias-bg-base) var(--edge-bg-mask, 55%), transparent);
+      }
+      /* The same descendant transparency rules as the contour sheet. They are kept
+         as separate selectors so either layer alone works; when both are mounted the
+         declarations are identical, so the later rule is a no-op re-statement. */
+      [class*='_frame']:has(> [data-endfield-bg-image]) {
+        background: transparent !important;
+      }
+      /* Lift the three layout columns above the background layer. This keeps
+         the image behind content without creating an isolation/stacking-context
+         trap on the frame (which would break fixed-position descendants such as
+         the full-screen settings overlay). Handles/overlays already carry their
+         own higher z-index and are left untouched. */
+      [class*='_frame']:has(> [data-endfield-bg-image]) > [class$='_sidebarCol'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) > [class$='_centerCol'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) > [class$='_detailsCol'] {
+        position: relative;
+      }
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class*='wSkVaW_root'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class*='ydkMvW_root'] {
+        background: transparent !important;
+      }
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_sidebarCol'] {
+        background: transparent !important;
+      }
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_sidebarCol'] [class$='_root'] {
+        background: transparent !important;
+      }
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_centerCol'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_detailsCol'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_detailsCol'] [class$='_root'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) [data-phase] {
+        background: transparent !important;
+      }
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_composerSeat'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) [data-composer-seat] {
+        background: linear-gradient(180deg,
+          rgba(0, 0, 0, 0) 0px,
+          color-mix(in srgb, var(--dsw-alias-bg-base) 82%, transparent) 36px) !important;
+      }
+      /* Stable body-class transparency: the global image layer owns a body class
+         (theme-endfield-bg-on) while it is active. These rules keep the sidebar,
+         conversation and details columns transparent without relying on transient
+         :has()/hover state, which is what caused the nav to only reveal the image
+         on hover. */
+      body.theme-endfield-bg-on [class*='_frame'] {
+        background: transparent !important;
+      }
+      body.theme-endfield-bg-on [class*='_frame'] > [class$='_sidebarCol'],
+      body.theme-endfield-bg-on [class*='_frame'] > [class$='_centerCol'],
+      body.theme-endfield-bg-on [class*='_frame'] > [class$='_detailsCol'] {
+        position: relative;
+      }
+      body.theme-endfield-bg-on [class$='_sidebarCol'],
+      body.theme-endfield-bg-on [class$='_sidebarCol'] [class$='_root'],
+      body.theme-endfield-bg-on [class$='_centerCol'],
+      body.theme-endfield-bg-on [class$='_detailsCol'],
+      body.theme-endfield-bg-on [class$='_detailsCol'] [class$='_root'],
+      body.theme-endfield-bg-on [data-phase] {
+        background: transparent !important;
+      }
+      /* The workspace list bottom fade otherwise ends at the opaque sidebar
+         fill and shows as a black bar above the footer/balance under a
+         background image. Make it fade to transparent too. */
+      body.theme-endfield-bg-on [class$='_sidebarCol'] {
+        --dsw-specific-sidebar-fill: transparent;
+      }
+      body.theme-endfield-bg-on [class*='_fade'] {
+        background: linear-gradient(to bottom, transparent, transparent) !important;
+      }
+      /* Protect the fixed sidebar chrome (top brand/new session and bottom
+         settings/footer/balance) with a solid base surface. The middle
+         workspace area stays transparent so the background image is clear. */
+      body.theme-endfield-bg-on [class$='_sidebarCol'] [class$='_logoRow'],
+      body.theme-endfield-bg-on [class$='_sidebarCol'] [class$='_newSession'],
+      body.theme-endfield-bg-on [class$='_sidebarCol'] [class$='_footArea'],
+      body.theme-endfield-bg-on [class$='_sidebarCol'] [class$='_settingsArea'],
+      body.theme-endfield-bg-on [class$='_sidebarCol'] [class$='_footerActions'] {
+        background: var(--dsw-alias-bg-layer-1) !important;
+      }
+      /* New Session keeps the signal-yellow Endfield treatment but is forced
+         opaque so the label never disappears into the image. */
+      body.theme-endfield-bg-on [class$='_sidebarCol'] [class$='_newSession'] {
+        background: var(--edge-accent) !important;
+        color: #000 !important;
+      }
+      body.theme-endfield-bg-on [class$='_sidebarCol'] [class$='_trigger']:hover {
+        background: var(--dsw-alias-interactive-bg-hover) !important;
+      }
+      body.theme-endfield-bg-on [class$='_composerSeat'],
+      body.theme-endfield-bg-on [data-composer-seat] {
+        background: linear-gradient(180deg,
+          rgba(0, 0, 0, 0) 0px,
+          color-mix(in srgb, var(--dsw-alias-bg-base) 82%, transparent) 36px) !important;
+      }
+      /* ================= navigation overlay background image =================
+         An optional second image layer that covers only the left navigation /
+         sidebar column. The sidebar column is not positioned by default, so it
+         is made relative only while this layer is mounted. The sidebar shell's
+         root owns an opaque fill, so it must be opened up for the overlay to be
+         visible; its own opacity and scrim are handled from JS/CSSOM. */
+      [data-endfield-nav-bg-image] {
+        position: absolute;
+        inset: 0;
+        /* 0 + the sidebar-child lift rule below keeps this overlay behind the
+           sidebar content without needing isolation on the sidebar column. */
+        z-index: 0;
+        pointer-events: none;
+        overflow: hidden;
+        background-position: center;
+        background-repeat: no-repeat;
+        background-size: var(--edge-nav-fit, cover);
+      }
+      [data-endfield-nav-bg-image]::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: color-mix(in srgb, var(--dsw-alias-bg-base) var(--edge-nav-mask, 65%), transparent);
+      }
+      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) {
+        /* Relative is needed as the containing block for the absolute overlay;
+           it does not trap fixed-position descendants the way transform/filter
+           would, so the full-screen settings overlay stays clickable. */
+        position: relative;
+        --dsw-specific-sidebar-fill: transparent;
+        background: transparent !important;
+      }
+      /* Lift the sidebar shell above the navigation overlay. Other direct
+         children, if any, keep their own stacking behavior. */
+      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) > [class$='_root'] {
+        position: relative;
+      }
+      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class$='_root'] {
+        background: transparent !important;
+      }
+      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class*='_fade'] {
+        background: linear-gradient(to bottom, transparent, transparent) !important;
+      }
+      /* Same fixed-sidebar chrome protection when only the navigation overlay
+         image is active (global background off). */
+      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class$='_logoRow'],
+      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class$='_newSession'],
+      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class$='_footArea'],
+      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class$='_settingsArea'],
+      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class$='_footerActions'] {
+        background: var(--dsw-alias-bg-layer-1) !important;
+      }
+      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class$='_newSession'] {
+        background: var(--edge-accent) !important;
+        color: #000 !important;
+      }
+      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class$='_trigger']:hover {
+        background: var(--dsw-alias-interactive-bg-hover) !important;
       }
       ::selection {
         color: #000;
@@ -3586,6 +4027,11 @@ function apply(ctx) {
       // transparency rules it depends on both live in that stylesheet, so leaving
       // it mounted would drop two raw canvases into the app's layout flow.
       contourTeardown()
+      // Same for the custom background image layer, which is also styled and
+      // positioned entirely by that stylesheet.
+      bgImageTeardown()
+      navBgImageTeardown()
+      if (typeof document !== 'undefined' && document.body !== null) document.body.classList.remove(BG_ACTIVE_CLASS)
       /* The announcement plate is styled entirely by that stylesheet too, so an
          in-flight word would become an unstyled, un-positioned block of text in the
          document flow. Stop watching as well: with the theme off there is nothing to
@@ -3601,6 +4047,8 @@ function apply(ctx) {
       // frame to exist; syncContour is a no-op until both are true and the
       // watermark's MutationObserver retries it as the app renders.
       syncContour()
+      syncBgImage()
+      syncNavBgImage()
       // Boot animation: only on a real page load, only when switched on, and only
       // after the stylesheet above exists (mount() inserted it).
       if (isLoaderOn()) runLoader()
@@ -3681,6 +4129,46 @@ function apply(ctx) {
       contourScrollPauseHintOn: '滚动上下文窗口时暂停等高线动画，停止滚动后约 10ms 恢复',
       contourScrollPauseHintOff: '警告：关闭后可能出现滚动卡顿',
       contourAnimNeedLayer: '请先开启等高线背景',
+      bgImageRow: '全局背景图（整页）',
+      bgImageOn: '开启背景',
+      bgImageOff: '关闭背景',
+      bgImageHintOn: '整页铺满自定义背景图（可调遮罩强度保证可读性）',
+      bgImageHintOff: '默认关闭；开启后可填写图片地址或上传本地图片',
+      bgImageNeedUrl: '请先填写图片地址或上传图片',
+      bgImageSourceRow: '背景图片来源',
+      bgImageUrlPlaceholder: 'https://... 或 dataURL',
+      bgImageApply: '应用',
+      bgImageUpload: '上传图片',
+      bgImageClear: '清除',
+      bgImageMaskRow: '背景遮罩强度',
+      bgImageMaskHint: '0=原图；数值越高越接近界面底色，文字更易读',
+      bgImageFitRow: '背景填充方式',
+      bgImageFitCover: '填充',
+      bgImageFitContain: '包含',
+      bgImageFitHint: '选择图片铺满屏幕或完整显示',
+      bgImageErrorQuota: '图片太大，无法保存（请改用图片 URL）',
+      bgImageErrorType: '请选择图片文件',
+      navBgImageRow: '导航区背景图',
+      navBgImageOn: '开启导航背景',
+      navBgImageOff: '关闭导航背景',
+      navBgImageHintOn: '在左导航区覆盖一张独立背景图（未开启时沿用整页背景）',
+      navBgImageHintOff: '默认关闭；开启后可填写图片地址或上传本地图片',
+      navBgImageNeedUrl: '请先填写导航区图片地址或上传图片',
+      navBgImageSourceRow: '导航图来源',
+      navBgImageUrlPlaceholder: 'https://... 或 dataURL',
+      navBgImageApply: '应用',
+      navBgImageUpload: '上传图片',
+      navBgImageClear: '清除',
+      navBgImageOpacityRow: '导航图不透明度',
+      navBgImageOpacityHint: '0=完全透明（显示整页背景）；100=完全显示导航图',
+      navBgImageMaskRow: '导航图遮罩强度',
+      navBgImageMaskHint: '0=原图；数值越高越接近界面底色，文字更易读',
+      navBgImageFitRow: '导航图填充方式',
+      navBgImageFitCover: '填充',
+      navBgImageFitContain: '包含',
+      navBgImageFitHint: '选择导航图铺满导航区或完整显示',
+      navBgImageErrorQuota: '图片太大，无法保存（请改用图片 URL）',
+      navBgImageErrorType: '请选择图片文件',
       watermarkRow: '背景水印',
       watermarkOn: '开启水印',
       watermarkOff: '关闭水印',
@@ -3761,6 +4249,46 @@ function apply(ctx) {
       contourScrollPauseHintOn: 'Pauses contour animation while scrolling and resumes about 10ms after it stops',
       contourScrollPauseHintOff: 'Warning: scrolling may stutter when this is off',
       contourAnimNeedLayer: 'Turn on the contour background first',
+      bgImageRow: 'Full-page background image',
+      bgImageOn: 'Turn on',
+      bgImageOff: 'Turn off',
+      bgImageHintOn: 'Fills the whole app with your image (adjust the scrim for readability)',
+      bgImageHintOff: 'Off by default; enter an image URL or upload a local image when enabled',
+      bgImageNeedUrl: 'Enter an image URL or upload an image first',
+      bgImageSourceRow: 'Image source',
+      bgImageUrlPlaceholder: 'https://... or data URL',
+      bgImageApply: 'Apply',
+      bgImageUpload: 'Upload image',
+      bgImageClear: 'Clear',
+      bgImageMaskRow: 'Background scrim',
+      bgImageMaskHint: '0 = original image; higher values wash towards the UI base colour for readability',
+      bgImageFitRow: 'Image fit',
+      bgImageFitCover: 'Cover',
+      bgImageFitContain: 'Contain',
+      bgImageFitHint: 'Choose whether the image fills the screen or is shown completely',
+      bgImageErrorQuota: 'Image is too large to save locally (use an image URL instead)',
+      bgImageErrorType: 'Please choose an image file',
+      navBgImageRow: 'Navigation background image',
+      navBgImageOn: 'Turn on',
+      navBgImageOff: 'Turn off',
+      navBgImageHintOn: 'Covers the left navigation with a separate image (off = the full-page image shows through)',
+      navBgImageHintOff: 'Off by default; enter an image URL or upload a local image when enabled',
+      navBgImageNeedUrl: 'Enter a navigation image URL or upload an image first',
+      navBgImageSourceRow: 'Navigation image source',
+      navBgImageUrlPlaceholder: 'https://... or data URL',
+      navBgImageApply: 'Apply',
+      navBgImageUpload: 'Upload image',
+      navBgImageClear: 'Clear',
+      navBgImageOpacityRow: 'Navigation opacity',
+      navBgImageOpacityHint: '0 = fully transparent (shows the full-page image); 100 = fully show the navigation image',
+      navBgImageMaskRow: 'Navigation scrim',
+      navBgImageMaskHint: '0 = original image; higher values wash towards the UI base colour for readability',
+      navBgImageFitRow: 'Navigation image fit',
+      navBgImageFitCover: 'Cover',
+      navBgImageFitContain: 'Contain',
+      navBgImageFitHint: 'Choose whether the navigation image fills the column or is shown completely',
+      navBgImageErrorQuota: 'Image is too large to save locally (use an image URL instead)',
+      navBgImageErrorType: 'Please choose an image file',
       watermarkRow: 'Background wordmark',
       watermarkOn: 'Turn on',
       watermarkOff: 'Turn off',
@@ -3849,6 +4377,17 @@ function apply(ctx) {
           const [contourFps, setContourFps] = R.useState(readContourFps())
           const [contourSpeed, setContourSpeed] = R.useState(readContourSpeed())
           const [contourScrollPause, setContourScrollPause] = R.useState(isContourScrollPauseOn())
+          const [bgImageOn, setBgImageOn] = R.useState(isBgImageOn())
+          const [bgImageDraft, setBgImageDraft] = R.useState(readBgImageUrl())
+          const [bgImageMask, setBgImageMask] = R.useState(readBgImageMask())
+          const [bgImageFit, setBgImageFit] = R.useState(readBgImageFit())
+          const [bgImageError, setBgImageError] = R.useState('')
+          const [navBgImageOn, setNavBgImageOn] = R.useState(isNavBgImageOn())
+          const [navBgImageDraft, setNavBgImageDraft] = R.useState(readNavBgImageUrl())
+          const [navBgImageOpacity, setNavBgImageOpacity] = R.useState(readNavBgImageOpacity())
+          const [navBgImageMask, setNavBgImageMask] = R.useState(readNavBgImageMask())
+          const [navBgImageFit, setNavBgImageFit] = R.useState(readNavBgImageFit())
+          const [navBgImageError, setNavBgImageError] = R.useState('')
           const [thunderOn, setThunderOn] = R.useState(isThunderOn())
           const [thunderAnim, setThunderAnim] = R.useState(isThunderAnimOn())
           const [palette, setPalette] = R.useState(readPalette())
@@ -3857,6 +4396,15 @@ function apply(ctx) {
           const labelStyle = { color: 'var(--dsw-alias-label-primary)', fontSize: '13px', fontWeight: 500, lineHeight: '1.5' }
           // Sub-label explaining what a switch does, so the row is self-describing.
           const hintStyle = { display: 'block', color: 'var(--dsw-alias-label-tertiary)', fontSize: '12px', fontWeight: 400, lineHeight: '1.5', marginTop: '2px' }
+          const inputStyle = {
+            flex: '1', minWidth: '0', padding: '6px 8px', fontSize: '12px',
+            color: 'var(--dsw-alias-label-primary)',
+            background: 'var(--dsw-alias-bg-layer-1)',
+            border: '1px solid var(--dsw-alias-border-l2)',
+            borderRadius: mode === 'round' ? '999px' : '0',
+            outline: 'none',
+          }
+          const errorStyle = { display: 'block', color: 'var(--dsw-alias-danger, #e5484d)', fontSize: '12px', fontWeight: 400, lineHeight: '1.5', marginTop: '2px' }
           const btnStyleFor = (on, disabled) => {
             /* The switches are themed BY the theme they configure, so while the
                theme is ON the "on" fill reads from the palette variable rather
@@ -3890,7 +4438,7 @@ function apply(ctx) {
             const next = !enabled
             if (typeof localStorage !== 'undefined') localStorage.setItem(ENABLED_KEY, next ? '1' : '0')
             setEnabled(next)
-            if (next) { mount(); syncWatermarkVisibility(); syncContour() }
+            if (next) { mount(); syncWatermarkVisibility(); syncContour(); syncBgImage(); syncNavBgImage() }
             else { unmount(); syncWatermarkVisibility() }
             /* The announcement watcher is gated on the master switch too, so it has
                to be reconciled here. unmount() already stops it, but turning the
@@ -3903,6 +4451,202 @@ function apply(ctx) {
             if (typeof localStorage !== 'undefined') localStorage.setItem(CONTOUR_KEY, next ? '1' : '0')
             setContourOn(next)
             syncContour()
+          }
+          const toggleBgImage = () => {
+            const next = !bgImageOn
+            if (next && readBgImageUrl() === '') {
+              setBgImageError(t('bgImageNeedUrl'))
+              return
+            }
+            if (typeof localStorage !== 'undefined') localStorage.setItem(BG_IMAGE_ON_KEY, next ? '1' : '0')
+            setBgImageOn(next)
+            if (next) syncBgImage()
+            else { bgImageTeardown(); syncBgImageActiveClass() }
+          }
+          const commitBgImageDraft = () => {
+            const value = bgImageDraft.trim()
+            if (value === '') {
+              setBgImageError(t('bgImageNeedUrl'))
+              return
+            }
+            try {
+              if (typeof localStorage !== 'undefined') localStorage.setItem(BG_IMAGE_URL_KEY, value)
+              setBgImageError('')
+              syncBgImage()
+            } catch (e) {
+              setBgImageError(t('bgImageErrorQuota'))
+            }
+          }
+          const pickBgImageFile = () => {
+            if (typeof document === 'undefined') return
+            const input = document.createElement('input')
+            input.type = 'file'
+            input.accept = 'image/*'
+            input.onchange = () => {
+              const file = input.files !== null && input.files.length > 0 ? input.files[0] : null
+              if (file === null) return
+              if (!file.type || file.type.indexOf('image/') !== 0) {
+                setBgImageError(t('bgImageErrorType'))
+                return
+              }
+              const reader = new FileReader()
+              reader.onload = () => {
+                const data = typeof reader.result === 'string' ? reader.result : ''
+                if (data === '') {
+                  setBgImageError(t('bgImageErrorType'))
+                  return
+                }
+                setBgImageDraft(data)
+                try {
+                  if (typeof localStorage !== 'undefined') localStorage.setItem(BG_IMAGE_URL_KEY, data)
+                  setBgImageError('')
+                  syncBgImage()
+                } catch (e) {
+                  setBgImageError(t('bgImageErrorQuota'))
+                }
+              }
+              reader.onerror = () => setBgImageError(t('bgImageErrorType'))
+              reader.readAsDataURL(file)
+            }
+            if (document.body !== null) {
+              document.body.appendChild(input)
+              input.click()
+              if (typeof setTimeout === 'function') setTimeout(() => { if (input.parentNode) input.parentNode.removeChild(input) }, 0)
+            } else {
+              input.click()
+            }
+          }
+          const clearBgImage = () => {
+            try {
+              if (typeof localStorage !== 'undefined') {
+                localStorage.removeItem(BG_IMAGE_URL_KEY)
+                if (bgImageOn) localStorage.setItem(BG_IMAGE_ON_KEY, '0')
+              }
+              setBgImageDraft('')
+              setBgImageError('')
+              if (bgImageOn) setBgImageOn(false)
+              bgImageTeardown()
+              syncBgImageActiveClass()
+            } catch (e) {
+              setBgImageError(t('bgImageErrorQuota'))
+            }
+          }
+          const setBgImageMaskValue = (value) => {
+            const parsed = Number(value)
+            const next = Number.isFinite(parsed)
+              ? Math.min(BG_IMAGE_MASK_MAX, Math.max(BG_IMAGE_MASK_MIN, Math.round(parsed)))
+              : BG_IMAGE_MASK_DEFAULT
+            if (typeof localStorage !== 'undefined') localStorage.setItem(BG_IMAGE_MASK_KEY, String(next))
+            setBgImageMask(next)
+            if (bgImageWrap !== null) applyBgImageStyles()
+          }
+          const setBgImageFitValue = (value) => {
+            if (BG_IMAGE_FIT_OPTIONS.indexOf(value) === -1) return
+            if (typeof localStorage !== 'undefined') localStorage.setItem(BG_IMAGE_FIT_KEY, value)
+            setBgImageFit(value)
+            if (bgImageWrap !== null) applyBgImageStyles()
+          }
+          const toggleNavBgImage = () => {
+            const next = !navBgImageOn
+            if (next && readNavBgImageUrl() === '') {
+              setNavBgImageError(t('navBgImageNeedUrl'))
+              return
+            }
+            if (typeof localStorage !== 'undefined') localStorage.setItem(NAV_BG_IMAGE_ON_KEY, next ? '1' : '0')
+            setNavBgImageOn(next)
+            if (next) syncNavBgImage()
+            else navBgImageTeardown()
+          }
+          const commitNavBgImageDraft = () => {
+            const value = navBgImageDraft.trim()
+            if (value === '') {
+              setNavBgImageError(t('navBgImageNeedUrl'))
+              return
+            }
+            try {
+              if (typeof localStorage !== 'undefined') localStorage.setItem(NAV_BG_IMAGE_URL_KEY, value)
+              setNavBgImageError('')
+              syncNavBgImage()
+            } catch (e) {
+              setNavBgImageError(t('navBgImageErrorQuota'))
+            }
+          }
+          const pickNavBgImageFile = () => {
+            if (typeof document === 'undefined') return
+            const input = document.createElement('input')
+            input.type = 'file'
+            input.accept = 'image/*'
+            input.onchange = () => {
+              const file = input.files !== null && input.files.length > 0 ? input.files[0] : null
+              if (file === null) return
+              if (!file.type || file.type.indexOf('image/') !== 0) {
+                setNavBgImageError(t('navBgImageErrorType'))
+                return
+              }
+              const reader = new FileReader()
+              reader.onload = () => {
+                const data = typeof reader.result === 'string' ? reader.result : ''
+                if (data === '') {
+                  setNavBgImageError(t('navBgImageErrorType'))
+                  return
+                }
+                setNavBgImageDraft(data)
+                try {
+                  if (typeof localStorage !== 'undefined') localStorage.setItem(NAV_BG_IMAGE_URL_KEY, data)
+                  setNavBgImageError('')
+                  syncNavBgImage()
+                } catch (e) {
+                  setNavBgImageError(t('navBgImageErrorQuota'))
+                }
+              }
+              reader.onerror = () => setNavBgImageError(t('navBgImageErrorType'))
+              reader.readAsDataURL(file)
+            }
+            if (document.body !== null) {
+              document.body.appendChild(input)
+              input.click()
+              if (typeof setTimeout === 'function') setTimeout(() => { if (input.parentNode) input.parentNode.removeChild(input) }, 0)
+            } else {
+              input.click()
+            }
+          }
+          const clearNavBgImage = () => {
+            try {
+              if (typeof localStorage !== 'undefined') {
+                localStorage.removeItem(NAV_BG_IMAGE_URL_KEY)
+                if (navBgImageOn) localStorage.setItem(NAV_BG_IMAGE_ON_KEY, '0')
+              }
+              setNavBgImageDraft('')
+              setNavBgImageError('')
+              if (navBgImageOn) setNavBgImageOn(false)
+              navBgImageTeardown()
+            } catch (e) {
+              setNavBgImageError(t('navBgImageErrorQuota'))
+            }
+          }
+          const setNavBgImageOpacityValue = (value) => {
+            const parsed = Number(value)
+            const next = Number.isFinite(parsed)
+              ? Math.min(NAV_BG_IMAGE_OPACITY_MAX, Math.max(NAV_BG_IMAGE_OPACITY_MIN, Math.round(parsed)))
+              : NAV_BG_IMAGE_OPACITY_DEFAULT
+            if (typeof localStorage !== 'undefined') localStorage.setItem(NAV_BG_IMAGE_OPACITY_KEY, String(next))
+            setNavBgImageOpacity(next)
+            if (navBgImageWrap !== null) applyNavBgImageStyles()
+          }
+          const setNavBgImageMaskValue = (value) => {
+            const parsed = Number(value)
+            const next = Number.isFinite(parsed)
+              ? Math.min(NAV_BG_IMAGE_MASK_MAX, Math.max(NAV_BG_IMAGE_MASK_MIN, Math.round(parsed)))
+              : NAV_BG_IMAGE_MASK_DEFAULT
+            if (typeof localStorage !== 'undefined') localStorage.setItem(NAV_BG_IMAGE_MASK_KEY, String(next))
+            setNavBgImageMask(next)
+            if (navBgImageWrap !== null) applyNavBgImageStyles()
+          }
+          const setNavBgImageFitValue = (value) => {
+            if (NAV_BG_IMAGE_FIT_OPTIONS.indexOf(value) === -1) return
+            if (typeof localStorage !== 'undefined') localStorage.setItem(NAV_BG_IMAGE_FIT_KEY, value)
+            setNavBgImageFit(value)
+            if (navBgImageWrap !== null) applyNavBgImageStyles()
           }
           /* Palette switch. Everything visual is carried by the class flip inside
              syncPaletteClass(); the only thing that needs explicit work is the
@@ -4167,6 +4911,190 @@ function apply(ctx) {
                   title: contourOn ? '' : t('contourAnimNeedLayer'),
                 }, t(contourScrollPause ? 'contourScrollPauseOff' : 'contourScrollPauseOn'))
               ]),
+              row('bg-image', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('bgImageRow') + t('sep') + stateOf(bgImageOn),
+                  R.createElement('span', { style: hintStyle },
+                    t(bgImageOn ? 'bgImageHintOn' : 'bgImageHintOff')
+                  )
+                ),
+                R.createElement('button', {
+                  type: 'button',
+                  onClick: toggleBgImage,
+                  style: btnStyleFor(bgImageOn),
+                }, t(bgImageOn ? 'bgImageOff' : 'bgImageOn'))
+              ]),
+              row('bg-image-source', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('bgImageSourceRow'),
+                  R.createElement('span', { style: hintStyle }, t('bgImageUrlPlaceholder')),
+                  bgImageError !== '' ? R.createElement('span', { style: errorStyle }, bgImageError) : null
+                ),
+                R.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', flex: '1', maxWidth: '360px' } }, [
+                  R.createElement('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, [
+                    R.createElement('input', {
+                      type: 'text',
+                      value: bgImageDraft,
+                      placeholder: t('bgImageUrlPlaceholder'),
+                      onChange: (e) => setBgImageDraft(e.target.value),
+                      style: inputStyle,
+                      disabled: !enabled,
+                    }),
+                    R.createElement('button', {
+                      type: 'button',
+                      onClick: commitBgImageDraft,
+                      style: btnStyleFor(false, !enabled),
+                      disabled: !enabled,
+                      title: !enabled ? '' : (readBgImageUrl() === '' ? t('bgImageNeedUrl') : ''),
+                    }, t('bgImageApply')),
+                    R.createElement('button', {
+                      type: 'button',
+                      onClick: pickBgImageFile,
+                      style: btnStyleFor(false, !enabled),
+                      disabled: !enabled,
+                      title: !enabled ? '' : (readBgImageUrl() === '' ? t('bgImageNeedUrl') : ''),
+                    }, t('bgImageUpload')),
+                    R.createElement('button', {
+                      type: 'button',
+                      onClick: clearBgImage,
+                      style: btnStyleFor(false, !enabled),
+                      disabled: !enabled,
+                    }, t('bgImageClear')),
+                  ])
+                ])
+              ]),
+              row('bg-image-mask', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('bgImageMaskRow') + t('sep') + bgImageMask + '%',
+                  R.createElement('span', { style: hintStyle }, t('bgImageMaskHint'))
+                ),
+                R.createElement('input', {
+                  type: 'range',
+                  min: BG_IMAGE_MASK_MIN,
+                  max: BG_IMAGE_MASK_MAX,
+                  step: 5,
+                  value: bgImageMask,
+                  onChange: (e) => setBgImageMaskValue(e.target.value),
+                  disabled: !bgImageOn,
+                  style: { width: '160px' },
+                })
+              ]),
+              row('bg-image-fit', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('bgImageFitRow') + t('sep') + t(bgImageFit === 'contain' ? 'bgImageFitContain' : 'bgImageFitCover'),
+                  R.createElement('span', { style: hintStyle }, t('bgImageFitHint'))
+                ),
+                R.createElement('span', { style: { display: 'flex', gap: '4px', flex: '0 0 auto' } },
+                  ...BG_IMAGE_FIT_OPTIONS.map((fit) => R.createElement('button', {
+                    key: 'bg-fit-' + fit,
+                    type: 'button',
+                    onClick: () => setBgImageFitValue(fit),
+                    style: btnStyleFor(bgImageFit === fit, !bgImageOn),
+                    disabled: !bgImageOn,
+                    title: bgImageOn ? '' : t('bgImageNeedUrl'),
+                  }, t(fit === 'contain' ? 'bgImageFitContain' : 'bgImageFitCover')))
+                )
+              ]),
+              row('nav-bg-image', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('navBgImageRow') + t('sep') + stateOf(navBgImageOn),
+                  R.createElement('span', { style: hintStyle },
+                    t(navBgImageOn ? 'navBgImageHintOn' : 'navBgImageHintOff')
+                  )
+                ),
+                R.createElement('button', {
+                  type: 'button',
+                  onClick: toggleNavBgImage,
+                  style: btnStyleFor(navBgImageOn),
+                }, t(navBgImageOn ? 'navBgImageOff' : 'navBgImageOn'))
+              ]),
+              row('nav-bg-image-source', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('navBgImageSourceRow'),
+                  R.createElement('span', { style: hintStyle }, t('navBgImageUrlPlaceholder')),
+                  navBgImageError !== '' ? R.createElement('span', { style: errorStyle }, navBgImageError) : null
+                ),
+                R.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', flex: '1', maxWidth: '360px' } }, [
+                  R.createElement('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, [
+                    R.createElement('input', {
+                      type: 'text',
+                      value: navBgImageDraft,
+                      placeholder: t('navBgImageUrlPlaceholder'),
+                      onChange: (e) => setNavBgImageDraft(e.target.value),
+                      style: inputStyle,
+                      disabled: !enabled,
+                    }),
+                    R.createElement('button', {
+                      type: 'button',
+                      onClick: commitNavBgImageDraft,
+                      style: btnStyleFor(false, !enabled),
+                      disabled: !enabled,
+                      title: !enabled ? '' : (readNavBgImageUrl() === '' ? t('navBgImageNeedUrl') : ''),
+                    }, t('navBgImageApply')),
+                    R.createElement('button', {
+                      type: 'button',
+                      onClick: pickNavBgImageFile,
+                      style: btnStyleFor(false, !enabled),
+                      disabled: !enabled,
+                      title: !enabled ? '' : (readNavBgImageUrl() === '' ? t('navBgImageNeedUrl') : ''),
+                    }, t('navBgImageUpload')),
+                    R.createElement('button', {
+                      type: 'button',
+                      onClick: clearNavBgImage,
+                      style: btnStyleFor(false, !enabled),
+                      disabled: !enabled,
+                    }, t('navBgImageClear')),
+                  ])
+                ])
+              ]),
+              row('nav-bg-image-opacity', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('navBgImageOpacityRow') + t('sep') + navBgImageOpacity + '%',
+                  R.createElement('span', { style: hintStyle }, t('navBgImageOpacityHint'))
+                ),
+                R.createElement('input', {
+                  type: 'range',
+                  min: NAV_BG_IMAGE_OPACITY_MIN,
+                  max: NAV_BG_IMAGE_OPACITY_MAX,
+                  step: 5,
+                  value: navBgImageOpacity,
+                  onChange: (e) => setNavBgImageOpacityValue(e.target.value),
+                  disabled: !navBgImageOn,
+                  style: { width: '160px' },
+                })
+              ]),
+              row('nav-bg-image-mask', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('navBgImageMaskRow') + t('sep') + navBgImageMask + '%',
+                  R.createElement('span', { style: hintStyle }, t('navBgImageMaskHint'))
+                ),
+                R.createElement('input', {
+                  type: 'range',
+                  min: NAV_BG_IMAGE_MASK_MIN,
+                  max: NAV_BG_IMAGE_MASK_MAX,
+                  step: 5,
+                  value: navBgImageMask,
+                  onChange: (e) => setNavBgImageMaskValue(e.target.value),
+                  disabled: !navBgImageOn,
+                  style: { width: '160px' },
+                })
+              ]),
+              row('nav-bg-image-fit', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('navBgImageFitRow') + t('sep') + t(navBgImageFit === 'contain' ? 'navBgImageFitContain' : 'navBgImageFitCover'),
+                  R.createElement('span', { style: hintStyle }, t('navBgImageFitHint'))
+                ),
+                R.createElement('span', { style: { display: 'flex', gap: '4px', flex: '0 0 auto' } },
+                  ...NAV_BG_IMAGE_FIT_OPTIONS.map((fit) => R.createElement('button', {
+                    key: 'nav-bg-fit-' + fit,
+                    type: 'button',
+                    onClick: () => setNavBgImageFitValue(fit),
+                    style: btnStyleFor(navBgImageFit === fit, !navBgImageOn),
+                    disabled: !navBgImageOn,
+                    title: navBgImageOn ? '' : t('navBgImageNeedUrl'),
+                  }, t(fit === 'contain' ? 'navBgImageFitContain' : 'navBgImageFitCover')))
+                )
+              ]),
               row('watermark', false, [
                 R.createElement('span', { style: labelStyle }, t('watermarkRow') + t('sep') + stateOf(wmOn)),
                 R.createElement('button', { type: 'button', onClick: toggleWm, style: btnStyleFor(wmOn) }, t(wmOn ? 'watermarkOff' : 'watermarkOn'))
@@ -4298,6 +5226,12 @@ function apply(ctx) {
       // The contour layer owns a rAF handle, a ResizeObserver, a MutationObserver
       // and two canvases — every one of them has to go with the run.
       contourTeardown()
+      // The custom backgrounds are plain DOM nodes, but they must still leave
+      // the frame/sidebar when the plugin run is disposed rather than linger
+      // without their stylesheet.
+      bgImageTeardown()
+      navBgImageTeardown()
+      if (typeof document !== 'undefined' && document.body !== null) document.body.classList.remove(BG_ACTIVE_CLASS)
       if (contourSchemeObserver) contourSchemeObserver.disconnect()
       /* The announcement feature owns two store subscriptions, a retry timeout and
          a hide timeout, all of which outlive the DOM node — unmount() covers the

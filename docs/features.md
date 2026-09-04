@@ -15,6 +15,15 @@
 | | 动态等高线 | 开 | `dsh-theme-endfield-contour-anim` |
 | | 动态帧率 | 24 FPS | `dsh-theme-endfield-contour-fps` |
 | | 动态速度 | 标准 | `dsh-theme-endfield-contour-speed` |
+| | 自定义背景图 | 关 | `dsh-theme-endfield-bg-image-on` |
+| | 背景图（URL / dataURL） | 空 | `dsh-theme-endfield-bg-image-url` |
+| | 背景图遮罩强度 | 55% | `dsh-theme-endfield-bg-image-mask` |
+| | 背景图填充方式 | 填充 | `dsh-theme-endfield-bg-image-fit` |
+| | 导航区背景图 | 关 | `dsh-theme-endfield-nav-bg-image-on` |
+| | 导航图（URL / dataURL） | 空 | `dsh-theme-endfield-nav-bg-image-url` |
+| | 导航图不透明度 | 100% | `dsh-theme-endfield-nav-bg-image-opacity` |
+| | 导航图遮罩强度 | 65% | `dsh-theme-endfield-nav-bg-image-mask` |
+| | 导航图填充方式 | 填充 | `dsh-theme-endfield-nav-bg-image-fit` |
 | | 背景水印 | 开 | `dsh-theme-endfield-watermark` |
 | | 水印保持显示 | 关 | `dsh-theme-endfield-watermark-persist` |
 | 03 动画 | 启动加载动画 | 关 | `dsh-theme-endfield-loader` |
@@ -84,6 +93,38 @@
 开启后，对话页等非新建会话页面也显示水印。
 
 此时水印挂载在**会话列内部**，以 `z-index: -1` 位于正文**之下**（该列在水印挂载期间获得 `isolation: isolate` 与 `position: relative`，卸载后自动还原）。之所以不挂 `<body>`：一个 fixed 的 body 子节点会画在消息文字**之上**，把用户正在读的内容洗白。
+
+### 自定义背景图（默认关闭）
+
+背景图拆成两个独立模块：**全局整页背景图** 和 **导航区覆盖背景图**。两者都支持 **URL / dataURL** 输入，也支持从本机选取图片文件（浏览器读成 dataURL 后保存）。
+
+#### 全局整页背景图
+
+- 图层挂在应用外框内 `inset:0; z-index:0`，铺满整个界面底层，**包含左侧导航区**；
+- 挂载期间会把外框、导航/侧栏、中列、详情列与会话根的底色置为透明；
+- 遮罩强度（`0–90%`）默认 `55%`：使用 `color-mix` 把背景图向应用底色靠拢，保持亮/暗两种界面下的文字可读性；
+- 填充方式支持**填充**（cover，默认）与**包含**（contain）；
+- 来源与开关分别持久化到 `dsh-theme-endfield-bg-image-url` 与 `dsh-theme-endfield-bg-image-on`；遮罩与填充分别存到 `dsh-theme-endfield-bg-image-mask`、`dsh-theme-endfield-bg-image-fit`。
+
+#### 导航区覆盖背景图
+
+- 独立开关，默认关闭；
+- 开启后只在左导航/侧栏列（`sidebarCol`）内覆盖一张独立背景图；
+- **未开启或未填导航图时，不挂载导航图层，左导航自然显示全局整页背景图**；
+- 拥有独立控制：
+  - **不透明度**（`0–100%`）默认 `100%`：`0` 时完全透明（显示整页背景），`100` 时完全显示导航图；
+  - **遮罩强度**（`0–90%`）默认 `65%`：把导航图向界面底色靠拢，保证“新会话/设置”等文字可读；
+  - **填充方式**：填充（默认）/ 包含；
+- 给导航区顶部/底部固定控件（顶部品牌/新会话、底部设置/余额等）提供**实心保护底**，即使导航图不透明度很高也能保持可读，中间工作区仍保持透明显示背景图；
+- 存储键：
+  - `dsh-theme-endfield-nav-bg-image-on`
+  - `dsh-theme-endfield-nav-bg-image-url`
+  - `dsh-theme-endfield-nav-bg-image-opacity`
+  - `dsh-theme-endfield-nav-bg-image-mask`
+  - `dsh-theme-endfield-nav-bg-image-fit`
+- 提供「清除」按钮：清除已保存的图片并将该功能恢复为关闭；
+- 本地 dataURL 受 `localStorage` 容量限制，保存失败时设置页会提示改用图片 URL；
+- 关闭主题总开关时，全局与导航图层都会随之移除，不残留 DOM。
 
 ---
 
