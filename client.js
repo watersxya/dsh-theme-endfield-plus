@@ -2764,25 +2764,6 @@ function apply(ctx) {
       body.theme-endfield-bg-on [class*='_fade'] {
         background: linear-gradient(to bottom, transparent, transparent) !important;
       }
-      /* Protect the fixed sidebar chrome (top brand/new session and bottom
-         settings/footer/balance) with a solid base surface. The middle
-         workspace area stays transparent so the background image is clear. */
-      body.theme-endfield-bg-on [class$='_sidebarCol'] [class$='_logoRow'],
-      body.theme-endfield-bg-on [class$='_sidebarCol'] [class$='_newSession'],
-      body.theme-endfield-bg-on [class$='_sidebarCol'] [class$='_footArea'],
-      body.theme-endfield-bg-on [class$='_sidebarCol'] [class$='_settingsArea'],
-      body.theme-endfield-bg-on [class$='_sidebarCol'] [class$='_footerActions'] {
-        background: var(--dsw-alias-bg-layer-1) !important;
-      }
-      /* New Session keeps the signal-yellow Endfield treatment but is forced
-         opaque so the label never disappears into the image. */
-      body.theme-endfield-bg-on [class$='_sidebarCol'] [class$='_newSession'] {
-        background: var(--edge-accent) !important;
-        color: #000 !important;
-      }
-      body.theme-endfield-bg-on [class$='_sidebarCol'] [class$='_trigger']:hover {
-        background: var(--dsw-alias-interactive-bg-hover) !important;
-      }
       body.theme-endfield-bg-on [class$='_composerSeat'],
       body.theme-endfield-bg-on [data-composer-seat] {
         background: linear-gradient(180deg,
@@ -2832,22 +2813,6 @@ function apply(ctx) {
       }
       [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class*='_fade'] {
         background: linear-gradient(to bottom, transparent, transparent) !important;
-      }
-      /* Same fixed-sidebar chrome protection when only the navigation overlay
-         image is active (global background off). */
-      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class$='_logoRow'],
-      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class$='_newSession'],
-      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class$='_footArea'],
-      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class$='_settingsArea'],
-      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class$='_footerActions'] {
-        background: var(--dsw-alias-bg-layer-1) !important;
-      }
-      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class$='_newSession'] {
-        background: var(--edge-accent) !important;
-        color: #000 !important;
-      }
-      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class$='_trigger']:hover {
-        background: var(--dsw-alias-interactive-bg-hover) !important;
       }
       ::selection {
         color: #000;
