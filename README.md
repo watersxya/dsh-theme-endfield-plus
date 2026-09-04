@@ -5,6 +5,8 @@
 奶油纸底、墨黑文字、信号黄/武陵青强调色、全直角工业编辑风。插件只运行在 Client 侧，通过主题令牌和样式覆盖界面，不修改应用代码。
 
 > 本仓库基于 [@ymh0000123/dsh-theme-endfield](https://github.com/ymh0000123/dsh-theme-endfield) 的原作进行功能增强与修复，非常感谢原作者 `@ymh0000123` 的出色设计与实现。
+>
+> English documentation: [README.en.md](README.en.md)
 
 ## 安装
 
