@@ -54,10 +54,12 @@ function grabNum(name) {
 /* The extraction and draw code touches only typed arrays, Math and a 2d context, so
    it runs directly in Node against a recording stub — no browser needed. Names must
    track client.js; a missing one throws here instead of failing mysteriously. */
-const fns = ['contourRng', 'contourBuild', 'contourBuildCandidate', 'contourCoverageScore',
+const fns = ['contourRng', 'contourStepFor', 'contourBuild', 'contourBuildCandidate', 'contourCoverageScore',
   'contourEvaluate', 'contourExtractLevel', 'contourExtract'].map(grab).join('\n')
 const nums = ['CONTOUR_STEP', 'CONTOUR_LEVELS', 'CONTOUR_SPAN',
-  'CONTOUR_MIN_LEN', 'CONTOUR_MIN_RING_BOX', 'CONTOUR_MIN_CROSSINGS'].map(grabNum).join('\n')
+  'CONTOUR_MIN_LEN', 'CONTOUR_MIN_RING_BOX', 'CONTOUR_MIN_CROSSINGS', 'CONTOUR_MIN_INK',
+  'CONTOUR_MAX_CELLS', 'CONTOUR_MIN_BUMPSAMPLES',
+  'CONTOUR_SMOOTH_FULL', 'CONTOUR_SMOOTH_LIMIT'].map(grabNum).join('\n')
 
 let api
 try {

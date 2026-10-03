@@ -44,7 +44,7 @@
 | **谷地黄**（默认） | `#fff500` | 86.6% | 终末地官网的信号黄 |
 | **武陵青** | `#14d0d0` | 49.8% | 青碧色 |
 
-存储键 `dsh-theme-endfield-palette`，取值 `valley` / `wuling`。只有精确值 `wuling` 选中武陵青，未设置或异常值都回落到默认。
+存储字段 `palette`（UI/存储键 `dsh-theme-endfield-palette`，由 `PREFS_KEY_TO_FIELD` 映射），取值 `valley` / `wuling`。只有精确值 `wuling` 选中武陵青，未设置或异常值都回落到默认。
 
 ### 语义状态色
 
@@ -68,10 +68,10 @@
 | `--edge-accent-rgb` | `255, 245, 0` | `20, 208, 208` | 约 30 处 `rgba(var(--edge-accent-rgb), α)` 半透明色块 |
 | `--edge-accent-deep` | `#e8e000` | `#10b8b8` | 悬停 / 按下加深 |
 | `--edge-accent-onpaper` | `#d9c700` | `#14d0d0` | 亮色模式下唯一需要「作填充压在纸上」的槽位 |
-| `--edge-status-light` | `#6b5d00` | `#006a6a` | 亮色模式回合状态文字 |
-| `--edge-status-light-mid` | `#3f3600` | `#003f3f` | 亮色模式流光亮带 |
-| `--edge-status-dark` | `#fff500` | `#14d0d0` | 暗色模式回合状态文字 |
-| `--edge-status-dark-mid` | `#a08a00` | `#7ee7e7` | 暗色模式流光亮带 |
+| `--edge-status-light` | `#6b5d00` | `#006a6a` | 亮色模式回合状态文字（0.2 经 `--dsw-alias-label-deep-diving` 生效） |
+| `--edge-status-light-mid` | `#3f3600` | `#003f3f` | 亮色模式流光亮带（0.2 经 `--dsw-alias-label-deep-diving-shimmer` 生效） |
+| `--edge-status-dark` | `#fff500` | `#14d0d0` | 暗色模式回合状态文字（同上） |
+| `--edge-status-dark-mid` | `#a08a00` | `#7ee7e7` | 暗色模式流光亮带（同上） |
 | `--edge-glow-light` | `0.08` | `0.08` | hero 背景光晕透明度 |
 | `--edge-glow-dark` | `0.05` | `0.04` | 同上，暗色 |
 
@@ -90,7 +90,7 @@
 
 ### 为什么暗色的「亮带」方向不一致
 
-回合状态标签是渐变流光文字，中间有一条亮带扫过字形。
+回合状态标签（0.1.x 是渐变流光文字，0.2 是遮罩扫光文字，见[工程笔记](engineering-notes.md#四类回合状态标签)）中间有一条亮带扫过字形。
 
 - 谷地黄的亮带是**压暗**的 `#a08a00`——黄色向上已经到顶，再亮就成白色。
 - 武陵青的亮带是**提亮**的 `#7ee7e7`——青色在这个亮度向下的余量比黄色小，更深的青（`#0a7d7d`）只有 3.54:1 不达标。
@@ -123,7 +123,7 @@
 
 三条附加规则：
 
-- **渐变文字要对两种底色都达标**（`bg-base` 与 `bg-layer-1`），因为亮带会扫过字形；而在 `prefers-reduced-motion` 下上游把 `background-size` 钉成 100%，那条亮带会**永久留在**字里。
+- **回合状态要对两种底色都达标**（`bg-base` 与 `bg-layer-1`），因为亮带会扫过字形；0.1.x 的渐变文字在 `prefers-reduced-motion` 下被上游把 `background-size` 钉成 100%，那条亮带会**永久留在**字里，0.2 的遮罩扫光同样要把两个令牌都按「会压在字形上」来取值。
 - **两配色的等高线合成对比度相差 ≤20%**：相同 alpha ≠ 相同存在感，所以 alpha 按「合成后对比度对齐」分别调参，而不是照抄。
 - **hero 光晕只许更轻，不许更响**：判据是单侧的——比它替换的 `#6187D8` @8% 更安静永远可接受。
 

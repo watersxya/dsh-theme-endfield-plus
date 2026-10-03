@@ -12,6 +12,23 @@
  * This script therefore asserts on real hovered pixels: it screenshots the button
  * with the pointer over it and measures the glyph colour against the fill.
  *
+ * It covers three surfaces, because a hover defect and its fix can pull in
+ * opposite directions and both need a real pointer:
+ *
+ *   1. 编辑 (settings > 模型, '*_secondaryButton') — the accent fill lands on the
+ *      button itself and must be met with ink. The original bug.
+ *   2. 添加模型提供商 ('*_addButton' inside the plain '*_addActions' wrapper) — THE
+ *      REPORTED 模型设置页面 BUG. The theme's composer hook was the bare substring
+ *      '_add', which also matched that wrapper <div>: hovering the button hovered
+ *      the wrapper, the theme filled the WRAPPER with the solid accent, and the
+ *      button kept upstream's translucent wash + label-primary — measured
+ *      rgb(245, 245, 240) on rgb(255, 245, 0) = 1.05:1, an invisible label.
+ *      A '.HOVERPROBE' class could never have caught this one either: the old rule
+ *      had no probe half and the wrapper is a DIFFERENT element from the button.
+ *   3. the composer's + button ('RlGAzG_add') — the hook's actual purpose. Scoping
+ *      the hook to the composer fixes (2) but must not delete (3), so both the
+ *      rest ink (accent) and the hovered inversion (black on accent) are asserted.
+ *
  * Usage: node test/hover-check.js
  */
 const fs = require('fs')
@@ -173,8 +190,39 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
       color:var(--dsw-alias-label-primary);background:0 0}
     .zGbnIq_secondaryButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
     .zGbnIq_secondaryButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid)}
+    /* ---- settings > 模型: 添加模型提供商 (the reported bug) ----
+       Verbatim from @deepseek-ai/dsh-client-ui-settings-models ModelsSection.module.css
+       as installed (the '*_3nPmjq_*' build; the older '*_zGbnIq_*' names in
+       settings-buttons.test.js are the same buttons under an older hash). The part
+       that matters: upstream wraps the button in a PLAIN <div> ('_addActions'), so
+       a pointer over the button hovers the wrapper as well. */
+    ._3nPmjq_addBlock{flex-direction:column;gap:12px;display:flex}
+    ._3nPmjq_addActions{display:flex}
+    ._3nPmjq_addButton{box-sizing:border-box;font:inherit;cursor:pointer;border:none;
+      justify-content:center;align-items:center;gap:6px;padding:0 14px;font-size:14px;
+      line-height:22px;display:inline-flex;height:44px;flex:1 1 0;min-width:180px;
+      border:1px dashed var(--dsw-alias-border-l3);
+      color:var(--dsw-alias-label-primary);background:0 0}
+    ._3nPmjq_addButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
+    /* ---- composer + button: what the theme hook actually targets ----
+       Verbatim from @deepseek-ai/dsh-client-ui-conversation InputBar.module.css. */
+    .Dc7zOa_composerSeat{display:flex;flex-direction:column}
+    .RlGAzG_add{background:var(--dsw-specific-selector);width:28px;height:28px;
+      color:var(--dsw-alias-label-primary);cursor:pointer;border:none;border-radius:999px;
+      flex:none;place-items:center;display:grid}
+    .RlGAzG_add:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid)}
   </style></head><body>
   <div class="panel"><button class="zGbnIq_secondaryButton" id="edit">编辑</button></div>
+  <div class="panel _3nPmjq_addBlock">
+    <div class="_3nPmjq_addActions" id="addWrap">
+      <button class="_3nPmjq_addButton" id="addProvider">+ 添加模型提供商</button>
+    </div>
+  </div>
+  <div class="panel Dc7zOa_composerSeat">
+    <!-- IconPlusOutlineMedium's geometry: a filled path on currentColor. -->
+    <button class="RlGAzG_add" id="composerAdd" aria-label="+"><svg width="14" height="14"
+      viewBox="0 0 16 16"><path fill="currentColor" d="M7 3h2v4h4v2H9v4H7V9H3V7h4z"/></svg></button>
+  </div>
   <script>window.__ModuleLoader__={load:(m)=>{window.__MOD__=m}}</script>
   <script src="./client.js"></script>
   <script>
@@ -193,8 +241,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
     const mod=window.__MOD__.factory(()=>null)
     mod.apply({get:(n)=>n==='theme'?{overrideTokens:(_s,t)=>{applyTokens(t);return ()=>{}}}:undefined,effect:()=>{}})
     window.__setScheme__('dark')
-    window.__rect__=()=>{ const r=document.getElementById('edit').getBoundingClientRect()
+    window.__rect__=(id)=>{ const r=document.getElementById(id).getBoundingClientRect()
       return {x:r.x,y:r.y,w:r.width,h:r.height} }
+    window.__style__=(id)=>{ const cs=getComputedStyle(document.getElementById(id))
+      return {color:cs.color, rgb:(cs.color.match(/\\d+/g)||[]).slice(0,3).map(Number)} }
+    window.__accent__=()=>getComputedStyle(document.body).getPropertyValue('--edge-accent').trim()
   </script></body></html>`)
 
   const port = 9333 + Math.floor(Math.random() * 400)
@@ -211,7 +262,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
      on every platform. The CSS is untouched, so the rule under test is still the
      shipped one. */
   const proc = spawn(chrome, ['--headless=new', '--disable-gpu', '--no-sandbox',
-    '--hide-scrollbars', '--window-size=520,220',
+    '--hide-scrollbars', '--window-size=520,560',
     '--font-render-hinting=none', '--disable-font-subpixel-positioning',
     '--disable-lcd-text', '--force-color-profile=srgb',
     '--remote-debugging-port=' + port,
@@ -236,7 +287,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
        Layout stays identical — only the rasteriser output grows. */
     const SCALE = 4
     await cdp.call('Emulation.setDeviceMetricsOverride',
-      { width: 520, height: 220, deviceScaleFactor: SCALE, mobile: false })
+      { width: 520, height: 560, deviceScaleFactor: SCALE, mobile: false })
     await sleep(600)
 
     const evaluate = async (expr) => {
@@ -248,50 +299,102 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
       return decodePng(Buffer.from(r.data, 'base64'))
     }
 
+    const hexRgb = (s) => {
+      const m = /^#?([0-9a-f]{6})$/i.exec(String(s).trim())
+      if (!m) return null
+      const n = parseInt(m[1], 16)
+      return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+    }
+    const near = (a, b, tol) => a !== null && b !== null
+      && Math.abs(a[0] - b[0]) <= tol && Math.abs(a[1] - b[1]) <= tol && Math.abs(a[2] - b[2]) <= tol
+    const rgbText = (p) => 'rgb(' + p.join(', ') + ')'
+
+    /* Real pointer over the element, screenshot, then split the box pixels into
+       fill (the dominant colour) and glyph ink (the furthest pixel in luminance
+       that occurs >= 3 times), and measure their contrast.
+       Rect comes back in CSS px; the screenshot is SCALE times that. */
+    const hoverSample = async (id) => {
+      const b = JSON.parse(await evaluate('JSON.stringify(window.__rect__(' + JSON.stringify(id) + '))'))
+      const cx = Math.round(b.x + b.w / 2), cy = Math.round(b.y + b.h / 2)
+      // Move the real mouse over the element so the genuine :hover rules apply.
+      await cdp.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx, y: cy, buttons: 0 })
+      await sleep(220)
+      const img = await shoot()
+      const x0 = Math.max(0, Math.round((b.x + 2) * SCALE)), x1 = Math.min(img.w - 1, Math.round((b.x + b.w - 2) * SCALE))
+      const y0 = Math.max(0, Math.round((b.y + 2) * SCALE)), y1 = Math.min(img.h - 1, Math.round((b.y + b.h - 2) * SCALE))
+      const tally = new Map()
+      const px = (x, y) => { const i = (y * img.w + x) * img.ch; return [img.data[i], img.data[i + 1], img.data[i + 2]] }
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+        const k = px(x, y).join(',')
+        tally.set(k, (tally.get(k) || 0) + 1)
+      }
+      const sorted = [...tally.entries()].sort((a, b2) => b2[1] - a[1])
+      if (sorted.length === 0) throw new Error('no pixels sampled for #' + id + ' — is it inside the viewport?')
+      const fill = sorted[0][0].split(',').map(Number)
+      let ink = fill, best = 0
+      for (const [k, n] of sorted) {
+        if (n < 3) continue
+        const p = k.split(',').map(Number)
+        const d = Math.abs(lum(p) - lum(fill))
+        if (d > best) { best = d; ink = p }
+      }
+      return { ratio: ratio(ink, fill), ink, fill }
+    }
+    const parkPointer = async () => {
+      await cdp.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 5, buttons: 0 })
+      await sleep(120)
+    }
+    const inkCheck = (label, s, min) => {
+      const detail = s.ratio.toFixed(2) + ':1  ink=' + rgbText(s.ink) + ' on fill=' + rgbText(s.fill)
+      if (s.ratio >= min) pass(label + '  [' + detail + ']')
+      else fail(label + '  [' + detail + ']  <- 悬停时文字与底色对比不足')
+    }
+
     for (const palette of ['valley', 'wuling']) {
+      const paletteLabel = palette === 'wuling' ? '武陵青' : '谷地黄'
       for (const scheme of ['light', 'dark']) {
         await evaluate("window.__setPalette__('" + palette + "')")
         await evaluate("window.__setScheme__('" + scheme + "')")
         await sleep(150)
-        const rect = await evaluate('JSON.stringify(window.__rect__())')
-        const b = JSON.parse(rect)
-        const cx = Math.round(b.x + b.w / 2), cy = Math.round(b.y + b.h / 2)
+        const accent = hexRgb(await evaluate('window.__accent__()'))
+        const tag = paletteLabel + ' · ' + scheme
 
-        // Move the real mouse over the button so the genuine :hover rule applies.
-        await cdp.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx, y: cy, buttons: 0 })
-        await sleep(220)
-        const img = await shoot()
+        /* 1. 编辑 — the accent fill is on the button itself (it needs ink on it). */
+        inkCheck(tag + ' · 编辑 真实 :hover', await hoverSample('edit'), 4.5)
+        await parkPointer()
 
-        /* Inside the button box, split pixels into fill (the dominant colour) and
-           glyph ink (everything far from it), then measure their contrast.
-           Rect comes back in CSS px; the screenshot is SCALE times that. */
-        const x0 = Math.max(0, Math.round((b.x + 2) * SCALE)), x1 = Math.min(img.w - 1, Math.round((b.x + b.w - 2) * SCALE))
-        const y0 = Math.max(0, Math.round((b.y + 2) * SCALE)), y1 = Math.min(img.h - 1, Math.round((b.y + b.h - 2) * SCALE))
-        const tally = new Map()
-        const px = (x, y) => { const i = (y * img.w + x) * img.ch; return [img.data[i], img.data[i + 1], img.data[i + 2]] }
-        for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
-          const k = px(x, y).join(',')
-          tally.set(k, (tally.get(k) || 0) + 1)
+        /* 2. 添加模型提供商 — the reported bug. The label must stay readable on the
+           composited fill, and the wrapper underneath must NOT be carrying the
+           theme's solid accent (that is the 1.05:1 state in the report). */
+        const add = await hoverSample('addProvider')
+        inkCheck(tag + ' · 模型页「添加模型提供商」真实 :hover', add, 4.5)
+        if (near(add.fill, accent, 4)) {
+          fail(tag + ' · 「添加模型提供商」外层容器不得被实心强调色填充  [fill=' + rgbText(add.fill)
+            + ' ≈ accent=' + rgbText(accent) + ']')
+        } else {
+          pass(tag + ' · 「添加模型提供商」外层容器未被实心强调色填充  [fill=' + rgbText(add.fill) + ']')
         }
-        const sorted = [...tally.entries()].sort((a, b2) => b2[1] - a[1])
-        const fill = sorted[0][0].split(',').map(Number)
-        // Ink = the pixel furthest in luminance from the fill (the glyph core).
-        let ink = fill, best = 0
-        for (const [k, n] of sorted) {
-          if (n < 3) continue
-          const p = k.split(',').map(Number)
-          const d = Math.abs(lum(p) - lum(fill))
-          if (d > best) { best = d; ink = p }
-        }
-        const r = ratio(ink, fill)
-        const label = (palette === 'wuling' ? '武陵青' : '谷地黄') + ' · ' + scheme + ' · 真实 :hover'
-        const detail = r.toFixed(2) + ':1  ink=rgb(' + ink.join(', ') + ') on fill=rgb(' + fill.join(', ') + ')'
-        if (r >= 4.5) pass(label + '  [' + detail + ']')
-        else fail(label + '  [' + detail + ']  <- 悬停时文字与实心底对比不足')
+        await parkPointer()
 
-        // Park the pointer away so the next iteration starts unhovered.
-        await cdp.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 5, buttons: 0 })
-        await sleep(120)
+        /* 3. composer + — the hook's purpose. Scoping it to the composer must not
+           delete the inversion: solid accent fill, black glyph, both schemes.
+           Its rest ink is dark-mode-only by design (in light the app's own
+           label-primary already contrasts on --dsw-specific-selector). */
+        const composer = await hoverSample('composerAdd')
+        inkCheck(tag + ' · 输入区 + 真实 :hover', composer, 4.5)
+        if (near(composer.fill, accent, 4)) pass(tag + ' · 输入区 + 悬停仍为实心强调底  [fill=' + rgbText(composer.fill) + ']')
+        else fail(tag + ' · 输入区 + 悬停应为实心强调底  [fill=' + rgbText(composer.fill) + ' vs accent=' + rgbText(accent) + ']')
+        await parkPointer()
+
+        const rest = JSON.parse(await evaluate('JSON.stringify(window.__style__("composerAdd"))'))
+        const restColor = rest.rgb
+        if (scheme === 'dark') {
+          if (near(restColor, accent, 4)) pass(tag + ' · 输入区 + 常态仍为强调色墨  [color=' + rest.color + ']')
+          else fail(tag + ' · 输入区 + 常态应为强调色墨  [color=' + rest.color + ' vs accent=' + rgbText(accent) + ']')
+        } else {
+          if (near(restColor, accent, 4)) fail(tag + ' · 输入区 + 常态不应被暗色规则上色  [color=' + rest.color + ']')
+          else pass(tag + ' · 输入区 + 常态未被暗色规则上色  [color=' + rest.color + ']')
+        }
       }
     }
     cdp.close()

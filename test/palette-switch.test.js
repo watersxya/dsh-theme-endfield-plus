@@ -29,6 +29,7 @@ const fs = require('fs')
 const path = require('path')
 const os = require('os')
 const { execFileSync } = require('child_process')
+const { BROWSER_SETTINGS_SCOPE_SNIPPET } = require(path.join(__dirname, 'fixtures', 'settings-scope.browser.js'))
 
 const ROOT = path.resolve(__dirname, '..')
 
@@ -60,15 +61,18 @@ fs.writeFileSync(page, `<!doctype html><html><head><meta charset="utf-8"><style>
   .pI_x6G_centerCol{flex-direction:column;min-width:0;display:flex;overflow:hidden}
   .wSkVaW_root{background:var(--dsw-alias-bg-base);flex-direction:column;height:100%;display:flex}
   .area{flex:1 1 auto;padding:30px}
-  /* Upstream's gradient-text turn status, reproduced so the override is measurable. */
-  .Md3f7G_turnStatus{background:linear-gradient(90deg,#101110 0%,#101110 40%,#d3e2ff 50%,#101110 60%,#101110 100%);
-    -webkit-text-fill-color:transparent;background-clip:text;-webkit-background-clip:text;font-size:14px}
+  /* Upstream's turn-status label on the DSH 0.2 shape, reproduced so the recolour is
+     measurable: the label is masked-sweep text whose whole rule reads the two
+     --dsw-alias-label-deep-diving* tokens. The pre-0.2 gradient-text rule this mock
+     used to carry no longer exists upstream, so testing it would test nothing. */
+  .xz4KEq_running{--dsw-alias-label-shimmer:var(--dsw-alias-label-deep-diving-shimmer);
+    color:var(--dsw-alias-label-deep-diving);font-size:14px}
 </style></head><body><div id="root">
   <div class="pI_x6G_frame">
     <div class="pI_x6G_sidebarCol">sidebar</div>
     <div class="pI_x6G_centerCol"><div class="wSkVaW_root"><div class="area">
       <table><tbody><tr id="row"><td id="cell">cell</td></tr></tbody></table>
-      <span class="Md3f7G_turnStatus" id="status">Deep diving...</span>
+      <span class="xz4KEq_running" id="status">Deep diving...</span>
       <button id="newSession" class="x_newSession">new</button>
     </div></div></div>
   </div>
@@ -77,6 +81,11 @@ fs.writeFileSync(page, `<!doctype html><html><head><meta charset="utf-8"><style>
 <script src="./client.js"></script>
 <script>
 window.__RESULTS__=[]
+/* The theme now reads its preferences through the dsh settingsScope seam. This
+   page seeds a fake binder exactly like the old localStorage lines did, and the
+   master/contour/palette field naming carries the same polarity. */
+${BROWSER_SETTINGS_SCOPE_SNIPPET}
+var __prefs = __endfieldSettingsScope({ enabled:'1', loader:'0', contour:'1', contourAnim:'0' });
 const R=(name,pass,detail)=>window.__RESULTS__.push({name,pass:!!pass,detail:detail===undefined?'':String(detail)})
 
 /* Apply theme tokens exactly as @deepseek-ai/dsh-client-ui-layout does: inline on
@@ -103,14 +112,10 @@ const setScheme=(s)=>{
 }
 const mod=window.__MOD__.factory(()=>null)
 const ctx={
-  get:(n)=> n==='theme' ? {overrideTokens:(_s,t)=>{applyTokens(t); return ()=>{ for(const n of appliedTokens) document.body.style.removeProperty(n); appliedTokens=[] }}} : undefined,
+  get:(n)=> n==='theme' ? {overrideTokens:(_s,t)=>{applyTokens(t); return ()=>{ for(const n of appliedTokens) document.body.style.removeProperty(n); appliedTokens=[] }}} : (n==='settingsScope' ? __prefs.binder : undefined),
   effect:(f)=>{window.__dispose__=f()},
 }
-localStorage.setItem('dsh-theme-endfield-enabled','1')
-localStorage.setItem('dsh-theme-endfield-loader','0')
-localStorage.setItem('dsh-theme-endfield-contour','1')
-localStorage.setItem('dsh-theme-endfield-contour-anim','0')
-localStorage.removeItem('dsh-theme-endfield-palette')   // default must be yellow
+// palette is intentionally NOT seeded, so it resolves to its default 谷地黄.
 mod.apply(ctx)
 
 const cs=()=>getComputedStyle(document.body)
@@ -142,12 +147,12 @@ setScheme('dark')
 const brandDarkBefore=v('--dsw-alias-brand-primary')
 setScheme('light')
 const washBefore=v('--dsw-alias-interactive-bg-hover')
-const glowBefore=getComputedStyle(document.getElementById('status')).backgroundImage
+const statusBefore=getComputedStyle(document.getElementById('status')).color
 const yellowCanvas=canvasHash()
 R('等高线画布已上色', yellowCanvas && yellowCanvas.n>0, JSON.stringify(yellowCanvas))
 
 /* ---- 4. FLIP to 武陵青 — via storage + the theme's own sync, no reload ---- */
-localStorage.setItem('dsh-theme-endfield-palette','wuling')
+__prefs.setField('palette','wuling')
 /* Call the public-ish path the settings row uses. The row lives in a React tree
    this harness does not render, so the class flip is performed the same way the
    handler does and the canvas redraw is left to the theme's MutationObserver —
@@ -176,9 +181,14 @@ setTimeout(()=>{
     washAfter.includes('20')&&washAfter.includes('208')&&washAfter!==washBefore,
     'before='+washBefore+' after='+washAfter)
 
-  const glowAfter=getComputedStyle(document.getElementById('status')).backgroundImage
-  R('回合状态渐变文字换色', glowAfter!==glowBefore && /0,\\s*106,\\s*106|006a6a/i.test(glowAfter),
-    glowAfter.slice(0,90))
+  /* The 0.2 turn-status label reads --dsw-alias-label-deep-diving, which the theme
+     writes as var(--edge-status-light) / var(--edge-status-dark). Same indirection as
+     the brand token above, so the palette flip must re-resolve it with no JS: the
+     resting glyph colour has to become the 武陵青 light stop #006a6a = rgb(0,106,106). */
+  const statusAfter=getComputedStyle(document.getElementById('status')).color
+  R('回合状态文字换色（0.2 deep-diving 令牌）',
+    statusAfter!==statusBefore && /0,\\s*106,\\s*106|#006a6a/i.test(statusAfter),
+    'before='+statusBefore+' after='+statusAfter)
 
   /* ---- 5. the canvas: JS-painted, so it must be redrawn ---- */
   const cyanCanvas=canvasHash()
@@ -187,7 +197,7 @@ setTimeout(()=>{
   R('等高线新配色偏青（B 通道高于 R）', cyanCanvas && cyanCanvas.b>cyanCanvas.r, JSON.stringify(cyanCanvas))
 
   /* ---- 6. switching the theme off must drop the class ---- */
-  localStorage.setItem('dsh-theme-endfield-enabled','0')
+  __prefs.setField('enabled','0')
   if(window.__dispose__) {} // dispose is the run teardown, not the theme switch
   // Reuse the theme's own unmount path through the settings toggle contract:
   // flipping ENABLED_KEY and calling the sync is what the row does.

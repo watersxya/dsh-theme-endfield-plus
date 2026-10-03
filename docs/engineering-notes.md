@@ -9,15 +9,157 @@
 ## 目录
 
 - [变量必须声明在 body 而不是 :root](#变量必须声明在-body-而不是-root)
+- [字体令牌是应用的公共接口，不是主题的开关](#字体令牌是应用的公共接口不是主题的开关)
 - [样式表是一整个模板字符串](#样式表是一整个模板字符串)
 - [层叠与挂载点](#层叠与挂载点)
 - [等高线背景](#等高线背景)
 - [启动加载屏](#启动加载屏)
 - [设置页国际化](#设置页国际化)
+- [峰谷定价窗口与法定节假日](#峰谷定价窗口与法定节假日)
+- [为什么设置必须落在 Host 的设置命名空间（不再用 localStorage）](#为什么设置必须落在-host-的设置命名空间不再用-localstorage)
 - [已修问题归档](#已修问题归档)
 - [验证方法论](#验证方法论)
 
 ---
+
+## 为什么设置必须落在 Host 的设置命名空间（不再用 localStorage）
+
+最初这些开关用浏览器 `localStorage` 持久化。**这对 DSH Desktop 是错的**：浏览器存储的作用域是「协议 + 主机 + 端口」的同源维度（origin），而 DSH Desktop 每次启动都在 `127.0.0.1` 上绑定一个**随机临时端口**。端口一变，origin 就变，于是上次保存的设置永远读不到，表现就是「**重启后设置恢复默认**」；localStorage 也因此从来没真正持久过跨会话。
+
+### 选哪条存储
+
+原生浏览器侧的**三个候选**都治标不治本，因为它们的键空间同样挂在 origin 上：
+
+- `localStorage`——origin 维度，random port 一换就清空（本 bug 的根源）。
+- `sessionStorage`——更糟，连同一会话的标签页都不共享。
+- IndexedDB——仍按 origin 分库，与 Desktop 随机端口的组合同样无法根治。
+
+正解是 DSH 自己的用户设置服务：**解析与落盘都由 Host 决定**，与页面 origin、端口完全无关。因此 **dsh web（浏览器、固定/默认端口）** 和 **DSH Desktop（随机临时端口）** 走同一条路径：它们都是 `127.0.0.1` loopback 页面，DSH 把连接解析成 `host` 持久化模式，值写进 profile 落盘位置，换端口也能读回。
+
+### DSH 0.1.7-rc.1 换掉了整套 settings API（v1.1.0 已跟进）
+
+0.1.7-rc.1 移除了 `ctx.settings.register` / `settings.get` / `settings.watch`、`@deepseek-ai/dsh-settings-file` 这个包，以及浏览器侧 `ctx.settingsScope` 服务：
+
+| | ≤ 0.1.5-rc.2（旧） | 0.1.7-rc.1（新） |
+| --- | --- | --- |
+| Host 声明 | `ctx.settings.register('dsh-theme-endfield', schema)` | 模块导出 schemastery `Config`，每个字段 `.volatile()` |
+| 命名空间 | 插件自定义字符串 `dsh-theme-endfield` | **profile entry id** = 本包 `cordis.patch.yml` 中该行的 `id: theme-endfield`（`index.js` 的 `SETTINGS_ENTRY`） |
+| 落盘 | `@deepseek-ai/dsh-settings-file` → `<dshHome>/settings.yaml` | DSH 设置服务 → profile patch `<profile>/cordis.patch.yml`（`ctx.configEditor` 加文件锁 + 原子写 + 热重载） |
+| Client 读写 | `ctx.settingsScope` 的 `bind({ namespace, decode })` | `ctx.configForms.get(<entryId>)` |
+| `set()` 返回 | 无（fire-and-forget） | `Promise<boolean>`；`false` = Host 拒绝或**跳过**（非 loopback 页面是 memory 模式，永不下盘） |
+
+关键差异，逐条都有对应的防护：
+
+- **只有 `.volatile()` 字段可编辑。** `ctx.settings` 只把 volatile 路径投影成表单，写非 volatile 路径会直接报 `Config field "x" is not volatile`；整份 schema 一个 volatile 字段都没有时该条目**根本不出现**在设置里。所以 `index.js` 的 `Config` **27 个字段全部 `.volatile()`**，`test/settings-config-forms.test.js` 会逐字段断言这一点（漏一个就是「设置保存不了」的现代写法）。
+- **两个 schemastery 必须区分。** DSH 同时装了带 `.volatile()` 的 `@deepseek-ai/schemastery`（3.18.4）和不带它的旧 `schemastery`（3.18.0）。`index.js` 的 `loadSchemastery(true)` 会逐个候选检查 `.volatile` 是否真的存在，找不到就返回 `undefined`（本插件退化成无需配置，而不是挂一个假表单）。
+- **命名空间是 entry id，不是包名。** `theme-endfield` 这个串同时出现在 `cordis.patch.yml` 的 `id:`、`index.js` 的 `SETTINGS_ENTRY` 和 client 的 `PREFS_ENTRY`；三者由新测试交叉校验。client 另外会依次尝试 `include:` 前缀等几种安装别名，优先选真正被 Host served（`status:'ready'`）的那个拼写；一个都没 served 时先绑定首选拼写（表单只是共享镜像的懒视图，早绑定才能等到迟到的 section）。此后每次镜像重载都会让每个表单重新派生，`unavailable`→`ready` 的转变会把「另一个拼写被 served」通知过来，此时自动切过去；万一镜像只更新却不通知（表单快照存储丢弃等价快照），还有**有界 settle watch**（20 × 500ms）自己轮询兜底。两种情况下切换期间 held 的编辑都会补写到新拼写上。
+- **`settings.yaml` 已废弃。** DSH 启动时把已有的 `settings.yaml` 改名为 `settings.yaml.imported`，并只迁移 `LEGACY_SECTION_ENTRIES` 里那几段。旧的主题段落名 `dsh-theme-endfield` 不等于 entry id `theme-endfield`，因此**不在迁移之列**，需要用户在设置页重设一次；这是 DSH 侧的行为，不是本插件丢的。旧值仍留在 `settings.yaml.imported` 里可手工对照。
+- **旧宿主仍然可用。** client 在找不到 `configForms` 时回落到 `ctx.settingsScope`（`binder.bind({ namespace: 'dsh-theme-endfield', decode })`），Host 在 `settings.register` 存在时才注册旧命名空间。两代 transport 的快照字段同名（`status` / `value` / `writable` / `mode`），所以除了「取句柄」和「写返回」之外整条存储逻辑是同一份。
+
+### Host ↔ Client 数据流
+
+1. **声明**（Host `index.js`）：0.1.7-rc.1 导出 `Config`（`z.object({ 每个字段: z.string().default(...).volatile() })`）；同时用 `ctx.inject(['settings'], sctx => sctx.effect(() => sctx.settings.configure({ auto: false }, ctx.fiber)))` 关掉自动生成的设置页（本插件自带四组页面）。旧宿主则在 `settings.register` 存在时执行 `register('dsh-theme-endfield', schema, { applies:'live' })`。schema 每个字段都是**字符串**字段并带 `.default(...)`：default-ON 存 `'1'`（读作 `!== '0'`），default-OFF 存 `'0'`（读作 `=== '1'`）；palette/radius/fps/speed 各存一个文档里写明的字面量。字符串化让三代存盘点位的值模型完全一致，client 的键表、面板与测试都不必随 transport 改动。
+2. **写**（浏览器 `client.js`）：设置面板每个 toggle 调用内部 `prefsSet(field, value)` → 只有当快照是 **durably served**（`mode:'host' && status:'ready' && writable`）时才调用 transport 的 `set(field, value)`，Host 收到后原子写盘。只凭 `writable` 判写是一个坑：host 模式的快照即便本命名空间**尚未被 served** 也会返回 `writable:true` 与 `status:'unavailable'`（`commit radius = round … status= unavailable` 就是这么打出来的）——旧代码照写不误、清了脏标记但什么都没落盘，刷新即丢。现在这种写被**拦下并标脏**（页面内仍生效），等快照在后续 ready 回相（Host 文档提交、镜像重载）时由 subscription 自动补写；`configForms.set()` 明确返回 `false`（Host 拒绝/跳过）时同样重新标脏等待下次回相，而不是假装写成功。
+3. **读 / 生效**：transport 的 `getSnapshot().value` 就是已由 schema 校验并合并默认值的整段（client 再经 `prefsResolveSection()` 归一化到 27 个声明字段）；主题层的 `isEnabled()` 与其它 getter 每次调用都 `prefsGet(field)` 现读本段，天然随值变化。
+4. **订阅同步**：`form.subscribe(...)` / `scope.subscribe(...)` 在每次落盘/镜像变化时唤醒，client 再跑一遍 `reconcileFromPrefs()`，把主题开关（enabled → mount/unmount token+样式表）、圆角/配色 class、水印、等高线、雷霆大字重新对齐。这样同 profile 里**另一个窗口/设备**编辑落盘文件（或本轮写入被 Host 回相确认）都不需要刷新即可热生效。订阅返回的 disposer 现在会被保存并在 run 拆除时调用：`ConfigForm` 是 provider 拥有、跨插件共享的实例，漏掉它会把这一个监听器泄漏给同页面的下一次 run。
+5. **启动恢复**：`apply()` 早于 transport 就绪时，读 schema 默认值（内存镜像），一旦 `status:'ready'` 的第一个真值镜像到达就切换到持久值——即使 Desktop 在随机端口上启动，也能立刻恢复到上次的设置。
+
+防御性：若 ctx 里既没有 `configForms` 也没有 `settingsScope`（纯独立页/测试桩），则回落内存默认值 + 会话内本地覆盖，写不过盘但**不引入 localStorage**，也绝不 throw。
+
+### 加载期解析 schemastery：dev-link 安装必须显式去找（v1.1.1 起加固，v1.1.2 加自检报告，v1.1.3 改为结构化扫描）
+
+- **为什么只能在顶层解析。** loader 导入模块后立刻 `runtime.Config = plugin.Config`（`@deepseek-ai/cordis-plugin-loader` 的 `Entry._init` → `registry.plugin`），这发生在任何插件体运行之前，`Config` 因此必须是模块求值期的静态导出——不能延迟到 `apply()` 里再做（那里能拿到 `ctx`，但已经太晚了）。
+- **dev-link 安装为什么解析不到。** 本包在 profile 里是软链/junction（`<profile>/node_modules/dsh-theme-endfield` → 本仓库）。Node 的 ESM/CJS 解析都**先取真实路径**，于是本文件的 `require` 链从 `E:\…` 开始，profile 的 `node_modules` 根本不在链上：一句 `require('@deepseek-ai/schemastery')` 必然 `MODULE_NOT_FOUND`。发布版（真实目录安装）才走普通 require 链。
+- **怎么找。** `resolutionRoots()` 显式列出所有可能持有 schemastery 的目录，再用 `require.resolve(spec, { paths: [dir] })`（语义是「当作从该目录发起」）逐个尝试，按 **spec 分组、scoped 优先**（只要存在 `@deepseek-ai/schemastery`，那份一定胜出，不会被兄弟插件留在更早路径上的旧 `schemastery` 抢走）。候选根依次是：本模块自身目录 → `require.main` 的目录与 `require.main.path` → `process.cwd()` → 本模块的各级祖先目录 → `DSH_HOME` 与 `~/.dsh` 的布局 → **结构化扫描**（对 `__dirname` / cwd / `require.main` / `process.argv[1]` / `process.execPath` 的每一级祖先调用 `pushLayout`，即把 `<祖先>`、`<祖先>/node_modules`、`<祖先>/profiles/*` 及其 `node_modules` 全部纳入）→ `%APPDATA%\npm\node_modules` → `PATH` 的每个目录（上限 40 条）。最后两道兜底：`require.main.require(spec)`，以及**扫描本进程 `require.cache` 里已加载过的 schemastery**（DSH 自己的设置服务就 import 它，所以只要它在本进程里，就能按对象身份复用）。
+  **结构化扫描是这里的关键**：它不依赖 `DSH_HOME`、`homedir()` 或 cwd 取到任何特定值——只要进程还能说出自己从哪儿启动，就能顺着祖先目录找到 `<profile>/node_modules`。v1.1.1/1.1.2 只按环境变量拼路径，一旦启动器把 `DSH_HOME` 设成 profile 自身（或设成别的值）就会整条落空，这正是「Host 侧依旧 `absent`」的成因。
+- **失败长什么样。** 找不到时 `Config` 是 `undefined`：`Config.listConfigs`（cordis_inspect 的 host provider）对该 entry 报 **`absent`**，DSH 不为它投影任何表单，client 于是永远停在 session-local —— **面板照常打开、开关照常能拨、刷新即复位**。这条症状与主题其它功能是否正常无关，所以极易被误判成「主题坏了」或「存储又变了」。注意 `absent` 只表示「没有 Config」；有 Config 但字段不 volatile 会以 `unsupported`/整条不出现的形式表现，含义不同。
+- **不再静默。** Host 侧 `Config === undefined` 时 `apply()` 打 `ctx.logger.warn`（成功则 `debug` 一行写明从哪个根解析到）；client 侧把 Host 真正 served 的命名空间列表并进既有的 `dbg` 诊断（`hostServes=`），`settle watch` 放弃时也明确打一行（`boundNs=` / `status=` / `hostServes=`）。有这一行就能立刻区分「Host 半没导出 Config」与「client 绑错了 entry 拼写」——两者现象完全一样。
+- **自检报告（v1.1.2 起）。** 构建不出 `Config` 时，除日志外还会把一份 JSON 写到 **profile 目录**（`ctx.baseUrl` 可解析时）或 `$DSH_HOME`：`theme-endfield-diagnostic.json`。内容包含 `dshHomeDirs` / `homedir` / `cwd` / `mainModule` / `argv` / `baseUrl` / `loaderStartedAt`（本进程启动时刻，用来判断「到底有没有真的重启过」）/ `cachedSchemasteryModules`，以及**每个候选根 × 每个包名**的 `require.resolve` 结果（成功路径或错误码）。`Config` 一旦构建成功该文件会被自动删除（`clearStaleDiagnostic`）：所以它**存在**＝host 侧仍拿不到 schemastery，**不存在**＝host 侧已正常、问题在别处。它只是诊断，不参与任何运行逻辑。
+- **改 Host 半必须重启 DSH 进程。** 浏览器刷新只重新拉 `client.js`（client 模块由 host 按请求从磁盘读取，所以改了就生效）；而 **Host 半的模块只在 profile 启动时 import 一次**（`EntryTree.import` 走 Node 内部 ESM loader，命中 ESM 缓存，不做 cache-busting），`dsh-hmr` 的 watch glob 默认忽略 `**/node_modules`，软链到仓库的插件文件不在它的观察范围内。因此「改完 `index.js` → 刷新页面 → 设置仍然不保存」是预期现象：进程里跑的还是启动时那份旧模块（旧版没有 `Config` 导出 → `absent`）。排查持久化问题前，先整进程重启一次再看——重启后若 `theme-endfield-diagnostic.json` 仍出现，才说明是解析问题；若它消失且 `Config.listConfigs` 变成 `schema`，说明已修好。
+- **`Config` 必须是字面量属性（v1.1.4）。** 这条独立于「找不找得到 schemastery」：`index.js` 是 **CommonJS**，而 loader 用 Node 内部 **ESM** loader 导入 entry，CJS→ESM 的命名空间由 `cjs-module-lexer` 的**静态分析**决定。写成 `const exported = {...}; module.exports = exported; exported.Config = Config;`（赋值在字面量之外）时，lexer 可能只认得出字面量里的 `apply`/`name`，于是 `unwrapExports()` 拿到的对象**有 `apply`（entry 照常 active）却没有 `Config`** —— 表现与「解析不到 schemastery」完全一样（`absent`、无表单、刷新复位），但日志里既不会出现解析失败的 warn，也不会留下自检报告，因为那份 reporting 代码根本没被跑到。
+  **判据**：在普通 node 里 `require()` 这个包得到 `Config = true`，而宿主进程里 `Config.listConfigs` 仍报 `absent`，且重启后 `theme-endfield-diagnostic.json` **不出现** —— 三点同时成立就说明是这里，而不是路径解析。修法是把 `Config` 写成导出字面量的**静态属性**（值为 `undefined` 时表示「本机确实没有 schemastery，无需配置」，是合法状态而非法 schema）。
+
+### 找不到 `.volatile()` 也必须能存（v1.1.5）
+
+v1.1.4 之前的判据是「**必须**找到带 `.volatile()` 的 schemastery，否则不导出 `Config`」。这条判据把一个**可降级**的情况升级成了**完全不可用**：没有 `Config` 不是「主题少了个功能」，而是 DSH 不为该 entry 投影任何表单，于是**用户拨的每一个开关都只活在页面里，刷新即丢**——正是本文件反复记录的那个症状。
+
+实测成因（本机 web profile）：`@deepseek-ai/schemastery@3.18.4`（全机唯一带 `.volatile()` 的副本）**能 `require.resolve` 到，却 require 不进来**——自检报告 `resolution` 里那一行报 `resolved`，而 `cachedSchemasteryModules` 里根本没有它；同一轮扫描反而成功加载了 `xiaofeishu` profile 的 `3.18.1` 与无 scope 的 `3.18.0`，这两个都**没有** `.volatile()`。于是候选列表非空、却没有一个能过旧判据，`Config` 落到 `undefined`。
+
+关键事实是：**`.volatile()` 就是 `this.extra('volatile', true)`**（3.18.4 源码里只有这一行），而 `.extra()` 在 3.18.0 / 3.18.1 里都有。DSH 侧读的是**投影结果**（`meta.volatile`），不是那个方法本身，所以标记可以在没有该方法时**合成**：
+
+| 能力 | 3.18.4（DSH 自带） | 无 scope 3.18.0 | 3.18.1 |
+| --- | --- | --- | --- |
+| `.extra(key, value)` | ✓ | ✓ | ✓ |
+| `.volatile()` | ✓ | ✗ | ✗ |
+| 能否加载（本机 web profile） | **✗** | ✓ | ✓ |
+
+现在 `selectBuilder()` 分两轮挑：先要 `native`（真的 `.volatile()`，保真度最高），没有才退到只有 `.extra()` 的副本并**合成标记**（`mode: 'synthesized'`）；两者都没有才不导出 `Config`。两种模式下每个字段最终都带 `meta.volatile === true`，DSH 都投影出可编辑表单。
+
+- **判据写进自检报告**：新增 `schemaMode` 记录走了哪条路；`resolution` 每一行现在除 `resolved` / `error` 外还带 `loaded` / `loadError` / `volatile` / `marker`。「解析得到但加载失败」以前在报告里读起来像自相矛盾，现在是一行结论。
+- **不再有「默认跳过」的断言。** `settings-config-forms.test.js` 的 Host 侧断言在拿不到 schemastery 时**整段跳过**，而拿不到 schemastery 恰恰是它要守的那个场景——于是在唯一要紧的环境里它什么都没验。新的 `settings-config-fallback.test.js` 不依赖本机 schemastery：它把**显式 builder**（含「只有 `.extra()`」这一形状）交给 `buildSchemaWith()`，逐字段断言默认值与 `meta.volatile`，并断言选择顺序（native 优先、`.extra()` 兜底、两者皆无则不导出）。
+
+### DSH 0.2.0-rc.2 上失效的三处应用侧钩子（v1.1.6 已跟进）
+
+0.2 **没有再动 settings API**：`Config` + `ctx.configForms` 那套接缝与 0.1.7 完全一致（唯一新增的语义是 `set()` 用**布尔值**回答而不是 reject，client 的写账本两种都认），所以本插件的 Host/Client 两半都不需要改。0.2 换掉的是三个**应用侧**细节，而它们的共同点是**旧写法不报错、只静默失效**——所以三处都在真实 0.2.0-rc.2 页面上实测过（scratch profile + 真运行时 + CDP 探针）：
+
+| 钩子 | 0.1.x | 0.2 | 旧写法的后果（实测） |
+| --- | --- | --- | --- |
+| 回合状态标签 | `@deepseek-ai/dsh-client-ui-conversation` 的 `<hash>_turnStatus`，**渐变文字**（`background-image` + `background-clip:text`） | `@deepseek-ai/dsh-client-ui-chat` 的 `<hash>_running`，**遮罩扫光文字**，着色只认 `--dsw-alias-label-deep-diving` / `-shimmer` | 规则永不命中；该令牌仍是应用自带值 `color-mix(in srgb, #101110 70%, #172554)`，标签完全没有主题色 |
+| 右侧栏列 | `_detailsCol`，不透明底色在其内部 `*_root` 上 | `_rightbarCol`，不透明底色**在列元素本身** | 选择器与目标元素**同时**变了：右侧栏一打开就整块盖住等高线图层 |
+| `_heroGlow` | 0.1.2-rc.1 起已无该模块 | 0.2 仍无 | 规则保持 self-healing 空钩子，不改行为 |
+
+因此回合状态标签的换色**从 CSS 移到 `theme.overrideTokens` 层**：给 `--dsw-alias-label-deep-diving` / `-shimmer` 各写一对 light/dark 值，复用既有的 `--edge-status-*` 色标（对比度结论完全不变，见[§ 四类：回合状态标签](#四类回合状态标签)与 [design-language.md](design-language.md#为什么亮色模式的强调色要下沉)），并用 `var()` 引用让配色切换依旧零 JS 重绘。护栏同步跟上：`check.js` 的第 4 条改成检查这两个令牌的四个值、并**禁止** `[class*='turnStatus']` 复活（那会是一条永远匹配不到的「假修复」），`test/selector-guard.test.js` 同时钉住 `_rightbarCol` 与两个令牌名。
+
+插件卡片的展示文案在 0.2 由 `locale/<语言>.json` 的 `meta.title` / `meta.description` 提供（`dsh.client` 声明本身不变），本版补上 `locale/en.json` 与 `locale/zh.json`。`dsh.client.inject` 里那两个 0.2 已不存在的包名（`@deepseek-ai/dsh-client-runtime`、`@deepseek-ai/dsh-client-ui-slots`）换成了 0.2 真正的提供方（`dsh-client-ui-theme` / `-ui-renderer` / `-ui-settings` / `-locale` / `-api-session-controller`）。这里要分清两件事：`dsh.client.inject` 是**浏览器包预载列表**（只影响加载顺序，指向不存在的包会被静默跳过，所以旧列表在 0.2 上「没坏」但也不再表达任何意图），而 `theme` / `configForms` 这类**服务**依赖由 client bundle 自己的 `exports.inject` 声明——`theme` 从来不是包名，写在这里本来就是无效项。
+
+### 存储字段名必须来自 schema，不能用「去掉前缀」推出来（issue #15）
+
+**曾经的写法（错误）**：客户端要往命名空间里写一个字段时，把 UI 键的前缀切掉当作字段名：
+
+```js
+const field = PREFS_KEY_TO_FIELD[rawKey] || rawKey.slice(PREFS_NS.length + 1)
+// 'dsh-theme-endfield-thunder-anim' -> 'thunder-anim'
+```
+
+而 Host 端的 schema（`index.js` 的 `FIELD_DEFAULTS`）声明的是 **camelCase**：`thunderAnim`。**只有单个词的字段两者才碰巧相同**，一切复合字段都不同：
+
+| UI 键（客户端） | 客户端推出的字段 | schema 声明的字段 |
+| --- | --- | --- |
+| `dsh-theme-endfield-thunder-anim` | `thunder-anim` ✗ | `thunderAnim` |
+| `dsh-theme-endfield-contour-anim` | `contour-anim` ✗ | `contourAnim` |
+| `dsh-theme-endfield-contour-fps` | `contour-fps` ✗ | `contourFps` |
+| `dsh-theme-endfield-contour-speed` | `contour-speed` ✗ | `contourSpeed` |
+| `dsh-theme-endfield-contour-scroll-pause` | `contour-scroll-pause` ✗ | `contourScrollPause` |
+| `dsh-theme-endfield-watermark-persist` | `watermark-persist` ✗ | `watermarkPersist` |
+
+**为什么表现是「开关刷新后复位」，而且是静默的。** schemastery 只校验它声明过的字段，**多出来的键原样带过去**。所以这一写并不是「没写进去」：`settings.yaml` 里真的多了一行 `thunder-anim: "1"`，而 `thunderAnim` 仍是默认值 `'0'`。于是：
+
+- 页面内开关正常工作（`prefsLocal` 里有本会话的值）；
+- 刷新后 schema 合并出 `thunderAnim: '0'`，客户端只复制**声明字段**，那行 `thunder-anim` 谁都不读；
+- 又一次回到默认值。用户观察到的正是「打开后刷新又变回关闭」。
+
+配套的坑是**测试桩复述了同一个错误**：`test/fixtures/settings-scope.js` 当时也用 `slice` 去前缀，于是「客户端读 `contour-fps`」与「测试桩写 `contour-fps`」两边对上，全绿——而生产环境里那个名字根本没人认。**测试桩必须按生产 schema 的形状（camelCase 字段名）造数据，否则它证明的是自己跟自己的约定。**
+
+现在的写法：`PREFS_KEY_TO_FIELD` 把每个键**显式**映射到字段名，读写两侧都走 `prefsFieldOf()`，所以「读的字段」与「写的字段」不可能再是两条路径。`test/settings-namespace.test.js` 同时对着三份东西交叉验证：`client.js` 的表、Host 的 `FIELD_DEFAULTS`、以及设置面板真实渲染出来的每个开关。
+
+### 已经写坏的存档：把旧拼写里的值搬回声明字段
+
+用户的 `settings.yaml` 里已经躺着 `thunder-anim` / `contour-anim` / … 这些**未声明键**。只修字段名的话，这些值会被忽略、字段回到默认——对老用户来说还是「又复位了一次」。所以 `prefsMigrateLegacy()` 在拿到第一段 served section 时把这些值**重新提交到声明字段上**（走的是 prefsSet，所以未就绪时照样会被 held + 补写）。判断「声明字段是不是用户自己的值」只有**一个**可靠信号：
+
+- 声明字段缺失或等于出厂默认 → 没人在这上面留下选择，旧拼写的键就是唯一的痕迹，**采纳**；
+- 声明字段是别的值 → 那是会正确写盘的版本存下来的，**让位**，旧键不得覆盖它。
+
+不能用 `hasOwnProperty` 判断：拿到的 section 是 schema **已经合并默认值**之后的视图，每个声明字段都在，分不出「存过这个默认值」和「schema 补的默认值」。
+
+`test/settings-namespace.test.js` 覆盖了这三种情形，并对四类改坏方式做过反向对照（见 [testing.md](testing.md)）。
+
+### 读路径：本会话的编辑排在已取回的 section 之上
+
+`prefsGetValue()` 曾经**优先**返回已取回的 section（`prefsFieldValue`），而 `prefsSet()` 只写 `prefsLocal`。宿主回相是异步的，所以「点一下开关，面板显示新状态、主题却还是旧状态」在回相到达前是真实存在的。现在只把 `prefsLocalEdited`（本会话真正被用户改过的字段）叠加在最上层：其余字段仍然以宿主为准，不会把服务端刚给的值盖掉。
+
+### 脏标记只能由「写成功」或「宿主已有该值」清除
+
+`prefsReplayDirty()` 曾在本地值**等于出厂默认**时就直接清掉脏标记。若宿主仍存着非默认值，用户「改回默认」这一操作就永远不会落盘，下次刷新旧的（非默认）值又回来了。同步地，本地值等于**宿主当前值**也不能直接清：宿主视图可能还是旧的，而用户刚刚把它改成同一个值——那也是一次真实编辑。现在只有两种情况清标记：写出去了，或者宿主取回的 section 确实已经持有该值。
 
 ## 变量必须声明在 body 而不是 :root
 
@@ -39,6 +181,37 @@
 
 ---
 
+## 字体令牌是应用的公共接口，不是主题的开关
+
+**曾经的写法（错误）**：主题在自己的样式表顶部声明
+
+```css
+:root {
+  --dsw-font-family: Arial, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --ds-font-family-code: 'SF Mono', …;
+}
+```
+
+**为什么错**：`--dsw-font-family` 不是主题私有变量，而是**应用的 UI 根字体令牌**——`dsh-web-frontend` 里就是这一条：
+
+```css
+body{font-family:var( --dsw-font-family, -apple-system, … )}
+```
+
+而应用把该令牌声明在 `:root`。主题再声明一次就是在**同一个元素上后写覆盖**，于是整个界面根字体变成 Arial。任何注入到应用根节点、写着 `font-family:inherit` 的第三方挂件（如 DeepSeek-Balance-Whale-Widget）都会**继承**这个字体，余额数字原有的字形随之丢失。实测（本机真实浏览器）：挂件计算字体是主题的 Arial，而应用自己的字体栈已经消失。
+
+同类漏出还有挂在 `body` 上的全局文本属性：`font-feature-settings:"tnum" 1,"ss01" 1` 与 `font-variant-ligatures:no-common-ligatures` 同样会被挂件继承。
+
+**现在怎么做**：
+
+1. 两个字体令牌**一个都不再声明**（连 `--ds-font-family-code` 也去掉：它与应用的列表几乎一致，覆盖它对非主题自有元素是视觉惰性的）。`check.js` 新增结构检查——样式表里只要出现 `--dsw-font-family:` / `--ds-font-family-code:` 就判失败，`selftest.js` 有一个注入用例证明这条检查真的会红。
+2. 主题自己的字体族抽成 `--edge-font`，声明在 `body` 上（原因同上：引用令牌的自定义属性不能在 `:root`），**只施加在主题自己创建/拥有的节点**上：启动加载屏 `[data-endfield-loader]`、水印字标 `[data-endfield-watermark]`、设置面板根 `.endfield-settings`。三者都是主题自己注入的节点，第三方挂件既不会是它们的祖先也不会是后代。
+3. **主题字体栈在前，`--dsw-font-family` 作为末尾兜底**。这个顺序是量出来的，不是猜的：本机同一串文字在应用令牌下渲染 **Segoe UI**（81.688px），在主题字体栈下渲染 **Arial**（84.516px）。若把令牌放在前面，加载屏、水印、设置面板会全部换脸，品牌块那套按 Arial 量出来的比例（见「启动加载屏」）随之失效。放在末尾既保住主题自有表面的现有观感，又保留「应用侧配置了根字体仍能到达主题元素」的协议含义；宿主没有 Arial / Narrow / PingFang / YaHei 时也仍然落在应用字体栈上，而不是某个任意 generic。
+4. 加载屏与水印的 `tnum` / `ss01` **跟着字体一起下移到元素自身**（不能再挂 `body`），否则挂件会被继承，加载屏也会失去它排版时依赖的等宽数字与变体字形。
+5. 回归测试 `test/font-scope.test.js`：在同一页里同时放一个 `font-family:inherit` 的第三方挂件与主题的全部自有表面，断言挂件拿回应用字体、`font-feature-settings` / `font-variant-ligatures` 为默认值，而加载屏与水印仍在主题字体（Arial）上且各自带着 `tnum` + `ss01`。把旧写法注回去，这条测试与 `check.js` 会同时变红。
+
+---
+
 ## 样式表是一整个模板字符串
 
 整份样式表是一个传给 `insertCss()` 的模板字符串（反引号包裹）。有三类改动会在「文件仍能解析」的情况下静默破坏效果，因此固化为 `check.js`：
@@ -57,7 +230,7 @@
 
 ### 等高线：应用外框内部
 
-从应用自身 CSS 实测：**三个元素会用不透明的 `--dsw-alias-bg-base` 盖住任何 body 级图层**——应用外框、对话列、详情列。所以图层挂进外框内部，并在挂载期间把这几处底色置为透明（`:has()` 守卫使功能关闭时全部规则失效）。
+从应用自身 CSS 实测：**三个元素会用不透明的 `--dsw-alias-bg-base` 盖住任何 body 级图层**——应用外框、对话列、右侧栏列（0.1.x 叫详情列）。所以图层挂进外框内部，并在挂载期间把这几处底色置为透明（`:has()` 守卫使功能关闭时全部规则失效）。
 
 外框本身已是 `position: relative` 且**不产生层叠上下文**，因此 `inset:0; z-index:0` 的子元素正好落在「外框底色之上、所有定位子元素之下」。
 
@@ -106,7 +279,7 @@
 
 2. **补一层长波起伏。** 高斯之和在岛屿之间**恰好衰减为零**，那里的场完全平坦、没有任何高度线穿过——首版渲染因此出现大片空白，暴露了构造痕迹。加入三道极缓的长波正弦后，间隙里仍有梯度可穿越，孤立的「靶心」才连成一整片地形。代价 1.70ms。
 
-3. **用二次曲线画线，而不是直线段。** marching squares 每个网格边至多产出一个顶点，10px 网格下折线**本身就是有棱角的**：实测线段平均 7.8px，顶点转角 p99 达 **41.7°**。`lineJoin` 救不了——1px 描边根本没有接合处可倒角。改成让每个原顶点当**控制点**、曲线穿过线段中点（C1 连续，数学上无折角），且不增加任何顶点：
+3. **用二次曲线画线，而不是直线段。** marching squares 每个网格边至多产出一个顶点，粗网格下折线**本身就是有棱角的**：实测线段平均 7.8px，顶点转角 p99 达 **41.7°**。`lineJoin` 救不了——1px 描边根本没有接合处可倒角。改成让每个原顶点当**控制点**、曲线穿过线段中点（C1 连续，数学上无折角），且不增加任何顶点：
 
    | 方案 | 转角 p99 | 顶点数 | 增加耗时 |
    | --- | --- | --- | --- |
@@ -115,8 +288,29 @@
    | **二次曲线（当时采用）** | **不再有折线转角** | **5.5k（不变）** | **+0.15ms** |
 
    > **后续演进**：中点二次曲线在长边上仍留下可见的「圆角多边形」弯折。现行实现改为 **Chaikin ×3 预处理 + 约束 Catmull-Rom 三次曲线**——曲线穿过原顶点、相邻段共享切向（切向系数 0.32），手柄长度上限（0.62× 较短邻段）防止窄鞍部过冲；开放路径的两个端点保持固定（0.4 系数、0.55× 手柄上限）。平滑效果由平滑/尖点测试固定，本表保留为当时的实测记录。
+   >
+   > 上表的角度是在**当时的 10px 采样网格**上量的；现行 `CONTOUR_STEP` 是 **6**（网格加密后折线本身的转角更小，所以那张表是保守上界）。也正因为顶点数随面积平方增长，网格不能靠一味加密来解决棱角——见下一节。
 
 4. **缝合成连续折线。** 线段按边 ID 缝合后，数千条散段变成约 80 条连续折线，整片地形只需一次 `stroke()` 而非数千次 `moveTo`。
+
+### v1.1.6：短窗口不再缠绕，同步画布路径不再压满一帧
+
+两个独立缺陷，都是「看着像画风问题、实际是数值 / 复杂度问题」。前者影响**所有渲染路径**（它发生在场生成阶段），后者只影响**主线程 Canvas2D 回退路径**（worker + WebGL2 路径下绘制不在主线程，但同一段画线代码在 worker 里省下的分配与 GC 依然是净收益）。
+
+**一、短 / 窄窗口下场被采样混叠（缠绕堆叠）。** 高斯凸起半径写的是 `(0.05 + rnd() * 0.09) * min(w, h)`——把地形特征尺寸绑在**较短边**上。外框一矮（或一窄），凸起半径就缩到比 6px 采样步长还小，于是相邻格点直接跨过好几条等值线，marching squares 吐出一圈圈紧贴的同心环加发夹尖刺，看起来就是线缠在一起、叠成一堆。实测：1440×130 明显缠绕，1440×60 退化成括号状碎屑，1440×900 正常。修法是给半径一个**不小于 4 个采样格**的下限（`CONTOUR_MIN_BUMPSAMPLES`）；常规窗口的相对项本来就远大于该下限，所以画面逐像素不变。
+
+**二、同步画布路径的单帧成本。** 在主线程 Canvas2D 路径上实测（1440×900，每张图）：
+
+| 项 | 实测 | 处理 |
+| --- | --- | --- |
+| `closePath()` | 18 次 / 张，均值 **0.278ms**、最大 1.2ms，约占一帧的 **16%** | 它把当前子路径拼进已累积的 path，成本随 path 里已有内容增长；改成**先画环、再画开放折线**，让每次拼接只面对环几何 |
+| 每帧贝塞尔段 | **37,865** 条（来自约 4.7k 抽取顶点，Chaikin ×3 把点数变成 8 倍） | 按抽取顶点数自适应 Chaikin 次数：≤8000 维持原本 3 次，>8000 降到 2 次、>20000 降到 1 次 |
+| `tangent()` | 每段 8 个 `[x, y]` 数组 + 最多 6 次 `Math.hypot`，剖析器显示该项独占全页 CPU **14%** | 改成标量切向 + 扁平数组 + `Math.sqrt`（参数都是像素差，远离 `hypot` 的溢出区间），几何保持逐字节等价 |
+| `smoothPath()` | 每个源顶点约 14 个小数组（3 次 pass × 每点 2 个） | 全程扁平 scratch 数组 |
+
+另外加了两道护栏：**格子数上限**（`CONTOUR_MAX_CELLS = 60000`，超出时按 `contourStepFor()` 加大步长；1440×900 是 36k 格，仍用 6px，普通窗口完全不变）把「一张图的成本」从随面积平方增长压成近似常数，同时让大 HiDPI 画布继续留在 worker 的显存上限之内；**占空比上限**（`CONTOUR_DUTY = 0.5`）只在同步画布路径生效——worker 绘制时一次刷新远低于 1ms，这个钳制永不生效；一旦回退到主线程且单帧超预算，就按「本次实测成本 / 0.5」拉长间隔，把线程还回去。相位仍然每次**只前进一个标称帧**（绝不按墙上时钟的间隔追赶），所以机器再忙看到的也是同一段动画放慢，而不是卡顿后跳一下。
+
+> 判定口径要写清楚：worker 路径下**不存在**「页面被绘制卡死」这一症状（抽取与绘制都在 worker 里）；上面那半张表量的是主线程 Canvas2D 路径，而 worker 拒绝超过 8M 显存像素的画布、或在 worker 不可用时，这条路径就是**实际在跑**的那条（`test/contour-loop-reentry.test.js` 专门覆盖这个回退态）。两条路径共用同一份 `contourDrawLines`，所以省下的分配在 worker 里同样成立。
 
 ### 平滑只管中段：三处真正的锐角（issue #3）
 
@@ -168,6 +362,22 @@
 - **接受-或-重抽校验**：分层修不了真正的机制——线只出现在场**穿越** 21 条固定高度之处，局部平坦且卡在两条高度之间的区域，凸起排得再匀也是空白。而若强行加大倾斜以保证每格必有穿越，需要横跨全宽约 9.5 条平行线，那读作条纹不是地形。所以改为按测试所用的同一不变量校验候选布局，不合格就换 salt 重抽（每次仅一次粗网格场求值，不提取不绘制）。
 
 校验门槛也是实测定的：只要求「至少 1 次穿越」时仍有 4 个空白格漏过，且**每个都含已绘制顶点**——高度只擦过格子一角，产出 0.16%~0.44% 墨迹，几何上成立、视觉上空白。故要求每格至少扫过 **3** 条高度带。
+
+**但「几次穿越」并不等于「有多少墨」**（v1.1.6 补上的一环）。3 条高度带可以全部只擦过同一格的同一个角，格子照样几乎空白——这正是 CI 上 `contour-specks` 偶发飘红的原因：最薄的那批合格布局在 CI 的栅格化下量到 **0.47%**，低于 0.6% 的判据，而校验器认为它们合格。三处证据把这条缝隙钉死了：
+
+- 判据本身没问题：把采样步长从 2px 改成 1px、把 alpha 阈值从 >10 放宽到 >0，同一格只涨到 1.25 倍（**c1≈c2**），说明不是采样混叠也不是阈值把墨算丢了，格子是**真的薄**；
+- 提高穿越次数不是出路：要求每格 ≥**4** 条高度带时，32 次重抽有 **39%** 的加载触顶、只能落回兜底布局（正是重抽机制要避免的那种失败）；
+- 提高「墨」才是出路，而且很便宜。
+
+所以校验器现在**同时**给每格算一个廉价的墨量代理：遍历该区域的场四边形，数每个四边形的四角值域里落进了多少条被绘制的高度带。一次这样的命中就意味着等值线穿过该四边形，约等于 `step` 像素的描边——不必跑 marching squares、也不必在构建期做提取。在 1406×756 与 1440×757 两个视口、各 400 个随机布局上对着**真实提取出的每格描边长度**标定：
+
+| 墨量代理 | 最薄区域的真实描边长度 |
+| --- | --- |
+| 47–52（加门槛前的最差） | **182–201px** |
+| 80（现行门槛） | **~310px** |
+| 92（中位布局） | ~437px |
+
+于是 `CONTOUR_MIN_INK = 80` 把「最薄区域」的保证从 ~182px 抬到 ~310px，代价是平均重抽次数 3.97 → 5.71、p95 15、最差 19（上限 32，200 个种子**从未触顶**）。实测效果：40 次加载里最薄的格子从 **1.02%** 抬到 **1.61%**，对 0.6% 判据的余量由约 1.7 倍变成 **2.7 倍**，CI 上那次 0.47% 的病态布局不再可能出现。
 
 去掉分层只留校验：实测 8 次加载有 4 次耗尽 12 次重抽上限并落回兜底布局。分层让「一次过」成为常态（平均 2.5 个候选，最多 6，从未触顶），校验把它变成保证。一次性构建耗时 18.7ms，且只发生在挂载 / resize，动画稳态仍有 76% 余量。
 
@@ -227,6 +437,16 @@
 
 若照此发布，用户会看到左边一条 10px 黄条僵在原地。改为 JS 按墙钟时间逐帧写 `width` / `opacity` 后，实测同一渲染器下取到 17 个不同宽度、10px → 500px，并在真实速度截图中抓到中途帧。
 
+### 启动读取不能只信 `apply()` 那一刻
+
+加载屏是唯一一个**必须在启动瞬间做决定**的表面：它在 `apply()` 里同步读一次 `loader`，读到就播。而设置节的实际到达顺序是异步的——`settingsScope` 的首次快照是 `{ status:'loading', value: undefined }`（`dsh-client-ui-settings` 的 `SettingsScopeSnapshot` 契约明写了这一点），Host 那份 section 走线上回来时 `apply()` 早已跑完。于是那次读落在 schema 默认值 `'0'` 上：用户即使存着 `loader:"1"`，也什么都不播。
+
+其余每个开关都从这场竞态里活了下来，因为它们**各自都有稍后重推的路径**：主开关 / 圆角 / 配色 / 水印随 `reconcileFromPrefs` 重画，等高线由水印的 `MutationObserver` 反复重试，雷霆大字在每次节变化时重订阅。**只有加载屏被显式排除在重放之外**（它是一次页面加载只播一次的片子，不能让运行期改动静悄悄盖上全屏），所以它没有第二次机会——这就是「开关是开的、动画却再也不出现」的全部原因。
+
+修法不是放开重放，而是把「首次权威节」做成一个独立信号：存储层读到一个 `status:'ready'` 的节、并跑完解析与旧拼写迁移之后，回调一次 `onPrefsSettled`；加载屏挂在这个信号上，且仍然只播一次。后续的节变化根本不经过它，「每次页面加载」的语义没有被稀释。
+
+这个 bug 能穿过整套测试，是因为既有用例的假 scope 都**同步答 `ready`**：`apply()` 那一刻读到的已经是真值。`test/loader-late-prefs.test.js` 因此给假 scope 加上 `{ readyDelayMs }`——先答 `loading`、再翻 `ready`，只有这个形状能复现线上。
+
 ---
 
 ## 设置页国际化
@@ -251,6 +471,35 @@
 
 ---
 
+## 峰谷定价窗口与法定节假日
+
+顶部余额胶囊要在本地算出「现在是高峰还是低谷」——Host 没有任何服务携带这份排班表，主题只能自己推算、自己保管日历。规则的两次修订都必须进代码：
+
+- **2026-09-10 起** flash 系列改为峰谷分时计费：**北京时间周一至周五 9:00-12:00、14:00-18:00 为高峰**，价格是空闲时段的 2 倍（api-docs.deepseek.com pricing）。
+- **2026-09-19 的「API 峰谷时间补充说明」** 补上了两条从主规则里读不出来的边界：中国**法定节假日全天**按空闲计费；**调休上班的周末仍按周末计费**（「只要是周末，就按空闲价执行」）。
+
+第二条推论出本节最重要的决定：既然官方把调休日直接归进周末规则，代码就**不需要**任何调休例外表——周末分支天然把它们算成低谷。代价是这条推理必须被机器守住：`check.js` 第 7 段要求**每一条 `makeup` 日期都真的是周六或周日**，一旦将来某份通知把普通工作日调去上班，守卫立刻失败，逼着重新审视模型，而不是继续默默按高峰计价。
+
+### 日历是数据，不是逻辑
+
+`BALANCE_HOLIDAY_NOTICES` 按年抄录国务院的放假安排通知（2026 年 = **国办发明电〔2025〕7号**，https://www.gov.cn/zhengce/zhengceku/202511/content_7047091.htm ），`from` / `to` 是**含端点的 MM-DD**，`makeup` 存调休日——它不只是给人看的，也是上面那条推理的证据。启动时逐日展开成 `BALANCE_HOLIDAY_DATES`（`'YYYY-MM-DD' → 节日名`），再由此得出 `balanceHolidayName` 与 `balanceDayIsOffPeak`。
+
+**没有收录的年份回退到普通工作日规则**，也就是一个未录入的节假日会被算成高峰。这是刻意的：宁可把假期显示成高峰（用户读到的只是「现在贵」），也不猜一个假的半价读数。代价是这份数据会随时间失效，而且失效是**静默**的——所以 `check.js` 在「当前北京年份不在表里」时响亮失败，作为每年 11 月（通知发布月）的提醒。
+
+### 窗口是「最长同价连续段」，不是日历天
+
+旧实现把窗口限制在**当天 00:00-24:00**，于是周五 18:00 到周一 09:00 这段连续 63 小时的低谷被切成三块，周六上午的读数变成「剩余 14:20:00（到周日 24:00）」——一个与价格无关的数字。午夜不是价格边界，现在窗口是**同价连续块的最长游程**：7 天国庆读成一段 183 小时，跨节、跨周末自然合并。
+
+实现上 `blocksAt(day)` 给出当天的块序列（整天谷 / 工作日五块），非高峰时从当前块向两侧逐块走，遇到高峰块即停；步数上限 `BALANCE_WINDOW_WALK_CAP = 4096` 只作防呆（9 天春节连周末约 20 块，实际不可达）。顺带把 `BALANCE_PEAK_WINDOWS` 从**死常量**改造成块序列的推导来源：此前它在声明后从未被使用，函数里另写死了一份 `edges`，两者随时可能漂移。
+
+### 节假日名只出现在开场 pose
+
+胶囊宽 300px，窄屏断点 316px 正是按它推出的，所以 **settled 行的文案一个字都不能加**。「今天是国庆节」只在开场品牌 pose 的标题里体现（`DeepSeek 国庆节低谷`，普通日子仍是 `DeepSeek 当前低谷`）；`test/balance-capsule.test.js` 直接断言 `win.holiday` 只被**一行**读取、且那一行在 brand-title 块内，防止它以后爬进 settled 行把胶囊撑宽。
+
+算术本身（节假日 / 周末 / 工作日各读到什么窗口、倒计时多少）钉在 `test/balance-window.test.js`；守卫与注入用例见 [testing.md](testing.md#顶部余额胶囊)。
+
+---
+
 ## 已修问题归档
 
 按成因分类。共同点：**都是量出来的，不是读代码读出来的。**
@@ -259,7 +508,7 @@
 
 主题把某个背景令牌映射成实心强调色，却没有接管前景，于是应用自己声明的 `color` 直接落在强调底上。
 
-以 `.zGbnIq_secondaryButton`（设置 › 模型 的 `编辑`）为例，上游声明：
+以设置 › 模型 的 `编辑` 按钮（类名 `<hash>_secondaryButton`，0.1.1 bundle 里哈希为 `zGbnIq_`）为例，上游声明：
 
 ```css
 color: var(--dsw-alias-label-primary);
@@ -270,23 +519,25 @@ background: var(--dsw-alias-interactive-bg-hover-solid);   /* :hover */
 
 早前的 hover 反色规则没兜住，是因为那条规则**刻意排除了普通 `button`**，好让「黄底黑字的开关」和「深底白图标的发送键」各自保住配色。而这类按钮恰好是「底色来自主题、文字来自应用」的，只能点名修。
 
-顺着这个模式审计安装态 bundle，发现**同样的缺陷共 6 处**：
+顺着这个模式审计安装态 bundle，发现**同样的缺陷共 6 处**（类名中的哈希随构建变化，现按语义后缀匹配；0.1.1 bundle 中的哈希备查）：
 
-| 元素 | 位置 | 修复前（暗色·谷地黄） | 修复后 |
-| --- | --- | --- | --- |
-| `.zGbnIq_secondaryButton` | 设置 › 模型 行操作（`编辑`） | **1.05:1** | 16.50:1 |
-| `.gNWCoW_inspectButton` | Cordis 检查面板 | 1.05:1 | 16.50:1 |
-| `.iWrAna_inspectButton` | 技能检查面板 | 1.05:1 | 16.50:1 |
-| `.o3BgMG_inspectButton` | 工具检查面板 | 1.05:1 | 16.50:1 |
-| `.JVDQca_arrow` | 附件轮播箭头 | 1.05:1 | 16.50:1 |
-| `.uV2eYG_add` | 输入区 `+` | 早前已修 | — |
+| 元素（语义后缀） | 0.1.1 哈希 | 位置 | 修复前（暗色·谷地黄） | 修复后 |
+| --- | --- | --- | --- | --- |
+| `_secondaryButton` | `.zGbnIq_…` | 设置 › 模型 行操作（`编辑`） | **1.05:1** | 16.50:1 |
+| `_inspectButton` | `.gNWCoW_…` | Cordis 检查面板 | 1.05:1 | 16.50:1 |
+| `_inspectButton` | `.iWrAna_…` | 技能检查面板 | 1.05:1 | 16.50:1 |
+| `_inspectButton` | `.o3BgMG_…` | 工具检查面板 | 1.05:1 | 16.50:1 |
+| `_arrow`（限输入区容器内） | `.JVDQca_…` | 附件轮播箭头 | 1.05:1 | 16.50:1 |
+| `_add`（限定输入区容器内） | `.uV2eYG_…` | 输入区 `+` | 早前已修；0.1.7 因裸子串命中容器而复发，见八类 | 18.31:1 |
 
 武陵青下同一处是 2.61:1——也不合格，只是没那么刺眼，这正是它一直没被发现的原因。
 
-**两个「看起来对、其实不对」的选择器坑：**
+**选择器匹配的四条铁律**（前三条来自 0.1.2-rc.1 全量重哈希、33 个哈希选择器同日全灭，见 issue #17；第四条来自 0.1.5-rc.2 的 header 重构，见七类）：
 
-1. **`[class$='_inspectButton']` 匹配不到。** 属性后缀选择器要求**整个 class 属性**以该串结尾，而元素常常还带第二个类（实测 `class="gNWCoW_inspectButton HOVERPROBE"` 直接漏掉）。上游会自由拼接类名，所以只能逐个点名。
-2. **`[class$='_arrow']` 会误伤。** 轨迹与工作区也有以 `_arrow` 结尾的类，但它们**没有 hover 填充**；按后缀匹配会给保持原底色的元素强行刷上墨色字。故只点名真正会拿到强调底的附件箭头，并把这两个「不该被改」的箭头写成回归断言。
+1. **禁止把模块哈希写进选择器。** CSS Module 类名是 `<hash>_<语义后缀>`，每次上游重新构建哈希全变，钉哈希的选择器**静默失效**。`test/selector-guard.test.js` 会在哈希重新出现时报警。
+2. **复合状态用子串匹配，不用 `[class$=]`。** 属性后缀选择器要求**整个 class 属性**以该串结尾，而元素常常还带第二个类（实测 `[class$='_inspectButton']` 在 `class="gNWCoW_inspectButton HOVERPROBE"` 上直接漏掉）。`[class*='_语义名']` 对拼接免疫；`_unselected` 因下划线断词不会误中 `_selected`。
+3. **泛化后缀必须加作用域，而且 0.2 连「作用域本身」也会改名。** 轨迹与工作区也有 `*_arrow` 类但**没有 hover 填充**，裸匹配会给它们强行刷墨色（暗色下黑-on-黑）。附件箭头按输入区容器（`_composerSeat`/`_composerHero`）限定；同理清等高线背景必须用列后缀限定 `_root`——0.1.x 是 `_centerCol`/`_detailsCol`，0.2 右侧栏改成 `_rightbarCol` 且不透明底色搬到了列元素本身，所以限定词与目标元素要**同时**更新（见[§ DSH 0.2.0-rc.2 上失效的三处应用侧钩子](#dsh-020-rc2-上失效的三处应用侧钩子v116-已跟进)）。这类改名不会报错，只会让规则静默不命中。
+4. **子树位置不是语义，不要用 `>` 把中间层数写死。** 语义后缀能扛住重新哈希，却扛不住上游**插入一层包裹元素**：`A > B` 在 `A > C > B` 上直接失配，同样静默。这条 bug 在一次会话里被犯了**两次**（见七类）：先是把徽章当成 header 的直系子节点，改成 `_headerActions >` 之后又漏掉了**插槽自己那层没有 class 的包裹 div**。层级要么用后代组合器表达，要么更好——**改用元素自身的特征**把目标锁定（不依赖任何一层的位置）。新增或调整这类选择器时，必须对着**真实 DOM**（浏览器里量出来，或从上游渲染代码读出来）验一遍，而不是对着测试夹具。
 
 ### 二类：前景与背景被映射成同一个值
 
@@ -324,10 +575,12 @@ background: var(--dsw-alias-interactive-bg-hover-solid);   /* :hover */
 
 ### 四类：回合状态标签
 
-该标签（`Md3f7G_turnStatus`）是**渐变文字**而非普通着色文字：上游画了一层 `linear-gradient` 背景，再用 `-webkit-text-fill-color: transparent` + `background-clip: text` 把字「镂空」，并以 `background-position` 做流光动画。由此两个结论：
+该标签在 **0.1.x** 上是 `Md3f7G_turnStatus`，是**渐变文字**而非普通着色文字：上游画了一层 `linear-gradient` 背景，再用 `-webkit-text-fill-color: transparent` + `background-clip: text` 把字「镂空」，并以 `background-position` 做流光动画。由此两个结论：
 
 1. **写 `color:` 完全无效**——透明文字填充优先，字仍由渐变决定；改色必须改渐变本身。
-2. **不能去动 `--dsw-static-deepseek-500/200` 这两个共享令牌。** 它们同时支撑 `--dsw-alias-button-info-fill`、`--dsw-alias-state-business-primary` 与 `--dsw-specific-bubble-highlight`，本主题刻意把它们映射成墨 / 纸色。因此只覆盖 `background-image`，上游的 `background-size`、`background-position` 与流光动画保持不变。
+2. **不能去动 `--dsw-static-deepseek-500/200` 这两个共享令牌。** 它们同时支撑 `--dsw-alias-button-info-fill`、`--dsw-alias-state-business-primary` 与 `--dsw-specific-bubble-highlight`，本主题刻意把它们映射成墨 / 纸色。因此当时只覆盖 `background-image`，上游的 `background-size`、`background-position` 与流光动画保持不变。
+
+**0.2 换掉了整套机制**（v1.1.6 已跟进，实测见[§ DSH 0.2.0-rc.2 上失效的三处应用侧钩子](#dsh-020-rc2-上失效的三处应用侧钩子v116-已跟进)）：标签搬到 `@deepseek-ai/dsh-client-ui-chat` 并改叫 `<hash>_running`，是**遮罩扫光文字**——渐变、`background-clip` 都不存在了，上面两条结论随之失效：写 `background-image` 没有任何作用，改色只能落到 `--dsw-alias-label-deep-diving` 与 `-shimmer` 这两个令牌上。本主题因此把换色移进 `theme.overrideTokens` 层，值仍复用同一批 `--edge-status-*` 色标，两代共享同一份对比度结论。
 
 色标取法见 [design-language.md](design-language.md#为什么亮色模式的强调色要下沉)。
 
@@ -336,6 +589,18 @@ background: var(--dsw-alias-interactive-bg-hover-solid);   /* :hover */
 - **`sessions` 服务迟到导致功能永久失效。** Web 启动是 `Promise.all` 并发挂载所有插件行，而本主题**不声明 `inject`**，所以 `apply()` 完全可能跑在 `dsh-client-runtime` 提供 `sessions` 之前。初版在 `apply()` 里缓存了一次 `ctx.get('sessions')`，于是在这类加载顺序下雷霆大字会**永久失效**——只在慢速 / 冷启动时偶发。现在改为**惰性解析 + 120ms 重试**。
 
   之所以不用 `inject: ['sessions']`：那会让**整个主题**进入 cordis 的 pending 态，把令牌与样式表的挂载一起推迟——主题必须先能上色，即使这个娱乐功能永远拿不到服务。
+
+- **列表快照里的 `current` 字段消失，把「暂时没有当前会话」写成了终态。** 上一个 bug 修的是**服务迟到**，这一个修的是**契约变化**：上游把 `SessionListState` 收窄成 `{ ids, byId, phase, projectionsBySession }`，`current` 整个没了（view selection 早在 `service.d.ts` 里就被注明「remains outside the Controller」）。旧代码 `snap.current` 于是恒为 `undefined`，而它落进的分支是 `thunderDetach(); return`——**没有订阅、没有定时器、没有任何后续推送能再进来**，功能在新版本上静默失效，而测试全绿：假 `sessions` 服务当时也按同一份旧形状造形，等于把 bug 一起固化了。
+
+  现在的权威答案是 **mainView retention**，而不是某个字段：workspace 面板用 `this.sessions.retain(target, { source: 'mainView' })`（`@deepseek-ai/dsh-client-ui-workspace`）标记「用户正在看这个会话」，行上体现为 `retainedBy.mainView > 0`；全应用统一读法是
+
+  ```js
+  Object.values(state.byId).find((row) => (row.retainedBy?.mainView ?? 0) > 0)?.id
+  ```
+
+  7 个官方包（`ui-layout` 的文档标题、`ui-cordis`、`ui-open-in-app`、`ui-settings-general`、`ui-agent-preset`、`ui-session`、`ui-workspace`）与第三方 `@nanmicoder/dsh-agent-teams` 都用的这一式。**注意 `mainView` 并不在 `SessionReferenceSourceMap` 的声明联合里**（那里只有 `controllerOperation` / `gateway`），它是运行时扩展——只能按运行时行为读，不能照 d.ts 穷举。
+
+  修法分三层：`thunderCurrentId(snap)` 先扫 `byId` 的 mainView 保留、再退回旧的 `snap.current`（兼容旧宿主）；列表快照读不到时**保留旧 watch**，不把「读不到」当「用户离开了」；id 解析不到时不再当终态——`list.subscribe` 还在就等下一次 publish（`publishRetention()` 会把新的 `retainedBy` 推进列表，所以切换会话照样能驱动重绑），只有连 `list.subscribe` 都拿不到才走 120ms 有界重试。上一版的教训在这里再次成立：**主题不声明 `inject`，所以「服务/字段暂时拿不到」必须永远留在等待态，而不是终态。**
 
 - **子开关在已挂载时失效。** 为避免每个流式 token 触发重排而加的快速返回，把开关协调代码一起跳过了。
 
@@ -361,6 +626,97 @@ background: var(--dsw-alias-interactive-bg-hover-solid);   /* :hover */
 | 武陵青 亮色 | `#14d0d07a`（α 0.48） | 1.288:1 | **−0.2%** |
 
 亮色青色无需像黄色那样另配一个压暗值（`#beaf00`），因为 `#14d0d0` 并不接近纸白。
+
+### 七类：语义后缀对了，子树位置却变了（同一个 bug 犯了两次）
+
+会话头部的 agent-preset 徽章（「创造模式」）在 0.1.5-rc.2 上悄悄退回上游的灰色胶囊——没有任何报错，因为**匹配不到任何元素的选择器不会报错**。
+
+旧规则 `[class$='_centerCol'] [class$='_header'] > [class*='_label']` 的后缀全对、哈希也没钉，前三条铁律条条满足，它错在**位置**：`>` 要求这个标签是 header 行的直系子节点，而真实 DOM 里它深在四层之下。第一次修复把 `>` 下移一层到 `_headerActions`——**还是错的**，因为 header 渲染插槽时，插槽会给**每一个条目再包一层没有 class 的 div**：
+
+```
+div.pI_x6G_centerCol
+  > header.wSkVaW_header
+      > div.wSkVaW_titleRow
+        > div.wSkVaW_titleCluster
+          > div.wSkVaW_headerActions
+            > div                     ← 插槽的条目包裹层，className 为空字符串
+              > span.SVAs4q_label     ← 徽章
+                > svg.SVAs4q_icon
+```
+
+也就是说：**凡是靠 `>` 数层数的写法，都在赌上游渲染几层包裹；上游这一版加了两层。** 而包裹层本身没有 class，连"点它的名"这条退路都没有。
+
+**为什么第一次"修完"看起来像没生效。** 在浏览器控制台里量了一次真实 DOM，得到的三个值把三种可能一次分清了：`HASNEW true`（我改的规则**已经到页面**，所以不是缓存/没刷新）、`ACCENT #fff500`（变量有值，不是变量问题）、`BG rgb(36, 38, 36)`（最终仍是上游灰底）＋祖先链里那个 `DIV.`。**一条"已经生效但什么都没匹配到"的规则，和一条"根本没送到浏览器"的规则，症状完全一样**；不先在页面里量这三个值，只会在"是不是缓存"和"选择器又写错了"之间来回猜——本次就是这样多花了一整轮。
+
+**为什么整套验证都没发现。** `test/shoot.js` 的截图夹具先后把标签直接挂在 `.wSkVaW_header` 和 `.wSkVaW_headerActions` 底下，**两次都是照着当时的选择器搭的**；`test/preset-chip.test.js` 的夹具也一样漏了那层无 class 包裹层。于是选择器在夹具上命中、截图正常、测试全绿，而真实页面一个元素都没匹配到。这是本次最值得记的教训：**夹具一旦是为了"让选择器通过"而搭的，它就从验证退化成了同义反复。**
+
+**最终修法：不再数层数，改用徽章自身的特征。**
+
+```
+[class$='_centerCol'] [class$='_header'] [class$='_headerActions'] [class*='_label']:has(> svg)
+```
+
+作用域停在 `_headerActions`，目标由徽章**自己**的性质确定——它是该插槽里唯一带图标的 `_label`。这条判据是有依据的：同一插槽里 jobs 渲染出的是 `_root` / `_trigger` 根，它那些 `_label` 出现在下拉菜单**深处**且**只有文字**；schedule 模块里根本没有 `_label` 这个局部名。**把裸后代匹配当反例做了变异验证**（去掉图标判据）——jobs 的行标签立刻被刷成强调色，说明这条判据不是装饰。
+
+另外一处不是选择器问题，而是**越界**：主题在这里的职责是**配色**，不是几何。第一次修好选择器时，我顺手按旧注释里的"撑满动作行"意图把包裹层压平（`display:contents`）并让 `_headerActions` 增长（`flex:1 1 auto`），结果在真实头部上变成一条**横贯整个会话列的黄色长条**（实测 976px 的行里占了 923px），被原样反馈回来（"现在变成一个长条了"）。那套几何是 0.1.2-rc.1 时代为"徽章是 header 行直系子节点"写的，骨架变了以后照搬只会得到另一个坏结果。**结论：只改颜色，尺寸与命中区域沿上游**（高度、180px 上限、超长省略号全部保留）。这条也写进了代码注释，防止下次又被人按旧注释"还原"回去。
+
+**变异验证 5 类，全部报错**：换回第一次修完的那版选择器（漏包裹层）→ 2 条断言红（背景正是线上看到的灰底）；把图标判据换成裸后代 → jobs 标签与"容器外 `_label`"两条反向断言红；重新加回压平 + 增长 → 两条"变成长条"断言红。
+
+`test/preset-chip.test.js` 现在按**量出来的**骨架搭夹具（含那层无 class 包裹层，以及一个"根带 class、`_label` 藏在菜单里"的 jobs 式兄弟条目），断言**结果**而不是选择器文本，并且**同时守住两侧**：既不能没上色，也不能被拉成长条。
+
+### 八类：子串选择器命中了**容器**（`_add` → 设置 › 模型的包裹层）
+
+反馈：设置 › 模型中「添加模型提供商」被鼠标指上去时，整条虚线按钮变成实心信号黄，文字近乎不可见（截图像素：底色 `#fff500`、文字 `#f5f5f0`）。
+
+根因不是"底色归主题、文字归应用"（一类），而是**规则命中了不该命中的元素**：输入区 `+` 的钩子是裸子串
+
+```css
+body[data-ds-dark-theme] [class*='_add']:not([class*='_addButton']) { color: var(--edge-accent) !important; }
+body[data-ds-dark-theme] [class*='_add']:not([class*='_addButton']):hover { color:#000 !important; background: var(--edge-accent) !important; }
+```
+
+而"添加模型提供商"的 `<button>` 上游用**一个普通 `<div>` 包着**（0.1.7 bundle 里 `_3nPmjq_addActions`，按钮是 `_3nPmjq_addButton`）。`_addActions` 不含 `_addButton`，于是它**通过**了 `:not()`；它又是 `div`，`:disabled` 永不成立；**指针停在按钮上时包裹层同样处于 `:hover`**。实测（真实鼠标 hover，暗色·谷地黄）：
+
+| 元素 | 属性 | 修复前 | 修复后 |
+| --- | --- | --- | --- |
+| `div._3nPmjq_addActions`（包裹层） | background | **rgb(255,245,0)** | rgba(0,0,0,0) |
+| `button._3nPmjq_addButton`（按钮） | color / background | rgb(245,245,240) / rgba(255,245,0,.18) | 不变（上游值） |
+| 合成后字形对比度 | — | **1.05:1**（夹具里量到 1.06:1） | 9.65:1 |
+
+按钮自己的半透明淡底（α 0.18）盖在包裹层的实心黄上，等于没盖；虚线边框是**按钮自己**的，所以画在黄底之上——这正是截图的样子。`:not()` 挡不住它：**包裹层不是按钮**，而且每出现一个含 `_add` 的新容器，就得再补一条 `:not()`，一个反馈补一条。
+
+顺着审计安装态 bundle 里所有含 `_add` 的类名，命中面是：
+
+```
+RlGAzG_add            输入区 + 按钮                     ← 目标
+_3nPmjq_addActions    设置 › 模型 添加块包裹层 <div>    ← 本次反馈
+_3nPmjq_addBlock / _addCard / _addModes / _addPanel / _addModelButton
+_0SbxAa_add           deliverables 文件 diff 的"新增行"
+LFNH1G_added / kuvljq_added / pFy1Ka_diffAdded / haSm5q_promptDiffLineadded
+qWvkEq_address*       侧栏浏览器的地址栏
+fO69Vq_addButton / _3nPmjq_addButton    （旧 `:not()` 排除的两个）
+```
+
+**修法：按第三条铁律加作用域**，与 `_arrow` 完全同款——把 `_add` 限定在输入区容器内：
+
+```
+:is([data-composer-seat], [class$='_composerSeat'], [class$='_composerHero']) [class*='_add']
+```
+
+作用域同时写上 `[data-composer-seat]`（上游给这个座位声明的 e2e 锚点）与既有的 `_composerSeat`/`_composerHero` 类钩子：`[class$=]` 只要上游给该元素追加第二个类就会**静默失效**，两个钩子取并集可以多扛一次重构。输入区内只有 `+` 一个类名含 `_add`，所以作用域不会误伤设置页、diff 行或地址栏。
+
+**反向对照**（把 `client.js` 换回修复前那版跑同一脚本）——修复前如实报错：
+
+| 用例 | 修复前 | 修复后 |
+| --- | --- | --- |
+| 谷地黄 · 暗色 · 模型页「添加模型提供商」hover | **1.06:1** + 外层容器 `rgb(255,244,0) ≈ accent` | 9.65:1，容器未被填充 |
+| 武陵青 · 暗色 · 同上 | **1.75:1** | 11.16:1 |
+| 输入区 `+` hover（暗色） | 18.31:1（本来正常） | 18.31:1（**未因收敛作用域而丢失**） |
+| 输入区 `+` 常态墨色 | `#fff500` | `#fff500`（作用域仍命中） |
+
+`test/hover-check.js` 现在同时守这三面（编辑按钮 / 模型页添加按钮及其容器 / 输入区 `+`），`test/selector-guard.test.js` 新增第三条断言：**任何裸的 `[class*='_add']` 都要报错**，把这条钩子钉在输入区作用域里。
+
+> 亮色模式本来就不受影响（该规则是 `body[data-ds-dark-theme]` 限定），测试也如实只在暗色下报红——这本身就是"作用域写对了"的证据。
 
 ---
 
@@ -429,6 +785,18 @@ background: var(--dsw-alias-interactive-bg-hover-solid);   /* :hover */
 `selftest.js` 会把真实 bug 注入 `client.js` 的**副本**并断言 `check.js` 确实失败——同时断言注入本身生效，避免「测试其实什么都没改」的空跑。
 
 这条护栏当场发挥过作用：调色板重构把渐变色标从字面量换成了 `var(--edge-status-*)`，于是针对 `#6b5d00` / `#fff500` 的注入不再匹配、变成空跑，脚本立刻报「INJECTION DID NOT APPLY (test is vacuous)」而不是假装通过。另外两个坑也是这样暴露的：`--edge-accent-deep` 两套配色各定义一次，只删一处不算删掉；本仓库是 **CRLF**，注入模式里写字面 `\n` 永远匹配不上（改用 `\r?\n`）。
+
+### 上游把菜单改成半透明材质后，「不透明」就成了主题的责任
+
+0.2 起菜单不再自己上色。`MenuSurface` 原语在面板背后挂一层 `_material`，值是 `background: var(--dsw-menu-surface-fill)`（亮 `#f8f9fa94` 58% / 暗 `#43454a73` 45%）加 `backdrop-filter: var(--dsw-menu-backdrop-filter)`（默认 `blur(40px) saturate(150%)`）。在纯色底上模糊兜住了透明度；在本主题的等高线底上，合成值与页面底色只差几个 RGB 步进（暗色实测 `rgb(38,40,41)` vs 页面 `rgb(16,17,16)`，面板内部 904 种颜色），面板就读成「没有背景」——用户报的是「菜单的背景没了」。
+
+这类失效最难定性：不报错、不写日志，主题里也没有任何「写错」的选择器——**变的是上游默认值的语义**。修法是认领令牌（`--dsw-menu-surface-fill` = 本主题的 `--dsw-alias-bg-overlay`，一个令牌同时覆盖 `--dsw-specific-menu` 与全部菜单），而不是给上游的哈希类名补一条选择器（那也过不了 `selector-guard`）。
+
+反方向的坑同样要防：把令牌钉成页面底色（`--dsw-alias-bg-base`）也是「没有背景」，只是换成了看不见的实心块——应用自己在 macOS 上的菜单 backing 用的就是 `--dsw-alias-bg-base`，所以这不是假想。测试因此**同时**断言「不透明」与「与页面底色不同」，并用像素证明菜单矩形内没有任何东西透出来。
+
+### JS 块注释里出现 `*/` 会让整个 bundle 静默不注册
+
+给令牌写说明时顺手把平台默认值写成 CSS 风格的行内注释（`/* light, 58% alpha */`），其中的 `*/` 提前闭合了外层 JS 块注释，于是剩下的文字落进代码——`client.js` 抛 `SyntaxError: Unexpected token '--'`，整个模块无法注册（`__ModuleLoader__` 拿到的模块是 `undefined`），而主题只是「没生效」，页面看起来像主题关着。`check.js` 的 `vm.Script` 编译检查能在进程内抓到它，所以**任何一次 `client.js` 改动之后都要先跑 `node check.js`**，再去跑浏览器测试。
 
 ### 无头环境的 rAF 不能用来采样性能
 

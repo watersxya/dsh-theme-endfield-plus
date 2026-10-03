@@ -3,3 +3,5 @@ node_modules/
 .DS_Store
 .dsh-vision-toolkit/
 .kagent/
+.mimosa/
+.claude/

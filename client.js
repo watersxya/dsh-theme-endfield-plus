@@ -8,7 +8,12 @@
  *   2) insertCss —— 注入字体栈、强调色、直角化、去蓝、hover 反色等全局样式。
  *      （动态插件环境走 styles.insert；安装为独立 bundle 时直接注入 <style> 到 head。）
  *   3) 设置页「终末地主题设置」—— 设置项按四组分类（主题 / 背景 / 动画 / 娱乐），
- *      均由 localStorage 持久化，文案跟随 DSH 的语言设置。
+ *      默认值 / 语义标记通过 DSH 的设置命名空间随 profile 落盘。DSH 0.1.7-rc.1 起
+ *      走 client `ctx.configForms`（host index.js 导出的 volatile `Config`，命名空间
+ *      = profile entry id `theme-endfield`）；旧版 DSH 回落到 `ctx.settingsScope`
+ *      （host 的 `ctx.settings.register('dsh-theme-endfield', …)`）。文案跟随 DSH
+ *      的语言设置。不再使用 localStorage：见本文 apply() 顶部
+ *      「Durable preference store」注释。
  *
  * 文档：README.md 为索引；设计语言见 docs/design-language.md，
  * 各开关行为见 docs/features.md，实现决策与实测数据见 docs/engineering-notes.md。
@@ -40,8 +45,7 @@ function insertCss(css) {
   }
 }
 
-function apply(ctx) {
-    // Idempotency: the installed bundle can be applied more than once (boot loader +
+function apply(ctx) {    // Idempotency: the installed bundle can be applied more than once (boot loader +
     // cordis composition both mount it). Only the first application owns tokens/styles;
     // duplicate overrideTokens would replace the layer and break the toggle's dispose.
     // The flag is RELEASED by the run's dispose (see the ctx.effect cleanup below), so
@@ -54,15 +58,1179 @@ function apply(ctx) {
     if (theme === undefined) return
     if (typeof window !== 'undefined') window.__dshThemeEndfieldApplied = true
 
+    /* ---------- Durable preference store (replaces localStorage) ----------
+       The theme's switches used to persist through `localStorage`, which DSH
+       Desktop broke on every restart: Desktop binds a fresh random localhost
+       port per launch, so the origin (and thus the browser storage scope)
+       changed and the saved settings silently reset to defaults.
+
+       The durable authority is DSH's own settings service, and DSH 0.1.7-rc.1
+       moved it once more. The whole pre-0.1.7 seam — a host
+       `ctx.settings.register(namespace, schema)` persisted by
+       `@deepseek-ai/dsh-settings-file` to `<dshHome>/settings.yaml`, mirrored
+       to the browser as the `ctx.settingsScope` service — is GONE: the package
+       is not in the distribution any more, `settings.yaml` is not the settings
+       carrier, and the client has no `settingsScope` service at all.
+
+       What replaced it (see index.js for the host side):
+
+         host    the plugin entry exports a schemastery `Config` whose fields
+                 are `.volatile()`. `ctx.settings` projects it into a form and
+                 persists user edits into the PROFILE PATCH
+                 (<profile>/cordis.patch.yml) through `ctx.configEditor`,
+                 i.e. a path owned by DSH and independent of the web origin.
+         client  `ctx.get('configForms')` — the settings domain's shared-form
+                 service — `.get(<profile entry id>)` returns that entry's
+                 ConfigForm: getSnapshot() / subscribe() / set() / unset() /
+                 mutate().
+
+       The namespace is now the PROFILE ENTRY ID, not a plugin-chosen string:
+       this package's cordis.patch.yml inserts `id: theme-endfield`, and
+       index.js exports that same id as SETTINGS_ENTRY. Both halves still speak
+       the old namespace string for the legacy fallback and as the prefix of
+       every UI key in the tables below.
+
+       Older hosts (<= 0.1.5-rc.2) keep the old seam, which this file still
+       binds when no `configForms` service exists — see the transport-selection
+       note further down. Either way the values live host-side, so:
+
+         dsh web     (browser, fixed loopback port)  -> host persistence
+         DSH Desktop (browser, random loopback port) -> host persistence
+
+       Both are loopback pages, so DSH resolves the connection to 'host' mode
+       and the values land on disk; a change of port does not move them because
+       nothing lives in browser storage any more.
+
+       Value model. Namespace fields are the tails of the old localStorage keys
+       and are stored as the same strings, so the semantics (and any older
+       <settings.yaml> section from a prior build) keep scanning identically:
+         default-ON switches store  '1'  and read as  !== '0'
+         default-OFF switches store '0'  and read as  === '1'
+         palette/radius/fps/speed  store one of their documented literals.
+       FIELD_DEFAULTS is the shipped fallback and mirrors index.js.
+
+       Resilience. Before the transport hands us a section (boot), or in an
+       environment with neither settings service at all (an out-of-DSH page,
+       in-process tests), the store falls back to FIELD_DEFAULTS overlaid with
+       any in-page overrides made this session. Writes are committed to the
+       settings transport only when it is ready + writable; otherwise they are
+       kept session-local so toggles still work in place but do not persist
+       (there is no durable backend to persist to — and no localStorage). */
+    /* DSH 0.1.7-rc.1 settings namespace: the profile entry id of this plugin's
+       row (index.js SETTINGS_ENTRY, cordis.patch.yml `id: theme-endfield`).
+       `configForms.get()` is keyed by exactly that string. */
+    const PREFS_ENTRY = 'theme-endfield'
+    /* Pre-0.1.7 namespace string. Still the prefix of every UI key in the
+       tables below, and the namespace the legacy `settingsScope` bind asks
+       for — so it stays even though the modern transport never uses it. */
+    const PREFS_NS = 'dsh-theme-endfield'
+    const PREFS_FIELD_DEFAULTS = {
+      enabled: '1',
+      palette: 'valley',
+      radius: 'square',
+      glass: 'off',
+      contour: '0',
+      contourAnim: '1',
+      contourFps: '24',
+      contourSpeed: '2',
+      contourRenderer: 'canvas',
+      contourScrollPause: '1',
+      contourTrail: '0',
+      watermark: '1',
+      watermarkPersist: '0',
+      loader: '0',
+      thunder: '0',
+      thunderAnim: '0',
+      /* 顶部余额胶囊 — opt-in, like thunder: a fixed capsule at the top center
+         of the frame showing the account balance, fed by the host-side
+         /theme-endfield/balance route. Ships OFF so an upgrade never adds a
+         floating element the user did not ask for. */
+      balanceCapsule: '0',
+      /* LOCAL PATCH (not upstream): 自定义背景图. Two independent layers — a
+         global full-page sheet and an optional navigation-column overlay. The
+         upstream tree has no background-image feature at all, so these nine rows
+         mirror the host FIELD_DEFAULTS in index.js. Both layers ship OFF. */
+      bgImageOn: '0',
+      bgImageUrl: '',
+      bgImageMask: '55',
+      bgImageFit: 'cover',
+      navBgImageOn: '0',
+      navBgImageUrl: '',
+      navBgImageOpacity: '100',
+      navBgImageMask: '65',
+      navBgImageFit: 'cover',
+      /* 渠道额度胶囊的右侧百分比读数选「已用」还是「剩余」——两个值都有真实语义，
+         不存在默认就错的答案，所以默认 used（与插件自身徽章一致的读法）。
+         仅影响 credits 模式的右侧百分比槽位；左侧主数字始终为剩余额度。 */
+      creditDisplay: 'remaining',
+      /* 音频通知 (host half: lib/audio.js). Two live slots — the prompt that
+         starts a turn and the final answer that ends one. `audioAttention` and
+         `audioTurnFail` are 预留: the sounds and switches ship, the triggers do
+         not, and the settings rows say so.
+
+         The MASTER switch ships OFF (opt-in), mirroring index.js FIELD_DEFAULTS
+         and lib/audio.js FALLBACK: an install that upgrades into this feature
+         must not start making noise by itself. The per-slot switches stay ON, so
+         turning the master on is what starts the sound. */
+      audioEnabled: '0',
+      audioVolume: '100',
+      audioBoot: '1',
+      audioTurnStart: '1',
+      audioTurnDone: '1',
+      audioAttention: '1',
+      audioTurnFail: '1',
+      audioDebounceMs: '2500',
+      audioSoundDir: '',
+      audioHumanOnly: '1',
+      audioDiag: '0',
+    }
+    /* Convert a namespaced storage key tail to the camelCase field the settings
+       schema declares (index.js FIELD_DEFAULTS). A build that derived the field
+       by stripping the namespace prefix instead left a compound name in its
+       kebab-case spelling, so this conversion is also the read migration for any
+       key the explicit table below does not list. */
+    const prefsFieldFromKey = (rawKey) => {
+      const prefix = PREFS_NS + '-'
+      const tail = rawKey.indexOf(prefix) === 0 ? rawKey.slice(prefix.length) : rawKey
+      return tail.replace(/-([a-z0-9])/g, (_, ch) => ch.toUpperCase())
+    }
+    /* Which schema field each UI/store key names. The left half is the key the
+       theme's own code has always used (the localStorage-era name, which the
+       settings rows, locales and tests all still speak); the right half is the
+       field the HOST registered in its schema (index.js FIELD_DEFAULTS — the
+       only names a scope.set can actually store).
+
+       THEY ARE NOT THE SAME STRING for any compound field, and deriving one
+       from the other by stripping the namespace prefix — the old
+       `k.slice(PREFS_NS.length + 1)` — is the bug this table exists to kill: it
+       turned 'dsh-theme-endfield-thunder-anim' into 'thunder-anim', while the
+       schema declares 'thunderAnim'. Six fields were affected (thunderAnim,
+       contourAnim, contourFps, contourSpeed, contourScrollPause,
+       watermarkPersist): the write landed on an UNDECLARED key, schemastery
+       kept it (it validates declared fields and passes extras through) but the
+       declared field stayed at its default, so the switch worked for the page
+       session, persisted junk into settings.yaml, and came back at its default
+       on the next load. Hence "开关刷新后复位".
+
+       Keys are therefore listed EXPLICITLY, never computed. */
+    const PREFS_KEY_TO_FIELD = {
+      'dsh-theme-endfield-enabled': 'enabled',
+      'dsh-theme-endfield-palette': 'palette',
+      'dsh-theme-endfield-radius': 'radius',
+      'dsh-theme-endfield-glass': 'glass',
+      'dsh-theme-endfield-contour': 'contour',
+      'dsh-theme-endfield-contour-anim': 'contourAnim',
+      'dsh-theme-endfield-contour-fps': 'contourFps',
+      'dsh-theme-endfield-contour-speed': 'contourSpeed',
+      'dsh-theme-endfield-contour-renderer': 'contourRenderer',
+      /* The renderer row's own key is the BARE 'contourRenderer' (a
+         localStorage-era name), not the namespaced spelling. It is listed
+         explicitly because test/settings-namespace.test.js requires the table to
+         cover every UI key the panel uses, and because the prefix-strip fallback
+         turning 'contourRenderer' into 'contourrenderer' is exactly the class of
+         silent mismatch this table exists to prevent. */
+      contourRenderer: 'contourRenderer',
+      'dsh-theme-endfield-contour-scroll-pause': 'contourScrollPause',
+      'dsh-theme-endfield-contour-trail': 'contourTrail',
+      'dsh-theme-endfield-watermark': 'watermark',
+      'dsh-theme-endfield-watermark-persist': 'watermarkPersist',
+      'dsh-theme-endfield-loader': 'loader',
+      'dsh-theme-endfield-thunder': 'thunder',
+      'dsh-theme-endfield-thunder-anim': 'thunderAnim',
+      'dsh-theme-endfield-balance-capsule': 'balanceCapsule',
+      'dsh-theme-endfield-credit-display': 'creditDisplay',
+      /* LOCAL PATCH: 自定义背景图. Compound tails DO NOT equal their schema
+         fields, so these must be listed — the prefix-strip fallback would turn
+         'dsh-theme-endfield-bg-image-on' into 'bgImageOn' by luck here, but
+         'nav-bg-image-on' only resolves because it is written out below rather
+         than derived. Listing all nine keeps the table complete, which
+         test/settings-namespace.test.js asserts for every declared host field. */
+      'dsh-theme-endfield-bg-image-on': 'bgImageOn',
+      'dsh-theme-endfield-bg-image-url': 'bgImageUrl',
+      'dsh-theme-endfield-bg-image-mask': 'bgImageMask',
+      'dsh-theme-endfield-bg-image-fit': 'bgImageFit',
+      'dsh-theme-endfield-nav-bg-image-on': 'navBgImageOn',
+      'dsh-theme-endfield-nav-bg-image-url': 'navBgImageUrl',
+      'dsh-theme-endfield-nav-bg-image-opacity': 'navBgImageOpacity',
+      'dsh-theme-endfield-nav-bg-image-mask': 'navBgImageMask',
+      'dsh-theme-endfield-nav-bg-image-fit': 'navBgImageFit',
+      /* 音频通知. These tails happen to equal their schema fields, so every one of
+         them would also resolve correctly through the prefix-strip fallback — they
+         are listed explicitly because test/settings-namespace.test.js asserts that
+         EVERY declared host field has a mapping entry, and because "the mapping is
+         the one place a UI key becomes a field" only holds if it is complete. */
+      'dsh-theme-endfield-audio-enabled': 'audioEnabled',
+      'dsh-theme-endfield-audio-volume': 'audioVolume',
+      'dsh-theme-endfield-audio-boot': 'audioBoot',
+      'dsh-theme-endfield-audio-turn-start': 'audioTurnStart',
+      'dsh-theme-endfield-audio-turn-done': 'audioTurnDone',
+      'dsh-theme-endfield-audio-attention': 'audioAttention',
+      'dsh-theme-endfield-audio-turn-fail': 'audioTurnFail',
+      'dsh-theme-endfield-audio-debounce-ms': 'audioDebounceMs',
+      'dsh-theme-endfield-audio-sound-dir': 'audioSoundDir',
+      'dsh-theme-endfield-audio-human-only': 'audioHumanOnly',
+      'dsh-theme-endfield-audio-diag': 'audioDiag',
+    }
+    /* The pre-migration spelling of a compound field, for the sections that the
+       buggy build already wrote: 'contourAnim' -> 'contour-anim'. Derived from
+       the table (not from the schema, which cannot know it) so the two can never
+       drift, and only for fields that really do have a distinct legacy double:
+       every single-word field maps to itself and is skipped. */
+    const PREFS_FIELD_TO_LEGACY_KEY = (() => {
+      const m = {}
+      for (const field of Object.keys(PREFS_KEY_TO_FIELD)) {
+        const f = PREFS_KEY_TO_FIELD[field]
+        const legacy = field.slice(PREFS_NS.length + 1)
+        if (legacy !== f) m[f] = legacy
+      }
+      return m
+    })()
+    /* The single place a UI/store key turns into a schema field name: both the
+       read path (prefsGet) and the write path (prefsSet/prefsCommit) go through
+       it, so a switch can never read a field other than the one it writes. A key
+       that is already a field name passes through, which is what the settings
+       panel's own state and the tests use. */
+    const prefsFieldOf = (rawKey) => {
+      if (Object.prototype.hasOwnProperty.call(PREFS_KEY_TO_FIELD, rawKey)) return PREFS_KEY_TO_FIELD[rawKey]
+      if (Object.prototype.hasOwnProperty.call(PREFS_FIELD_DEFAULTS, rawKey)) return rawKey
+      /* Last resort: a key this table does not list. It is camelCased through
+         prefsFieldFromKey rather than handed back as the raw tail, so a compound
+         name reaching this path still lands on the camelCase field the host
+         DECLARES instead of on an undeclared kebab key — which is precisely the
+         failure mode the table above exists to prevent, and which a future
+         compound row could otherwise reintroduce silently. */
+      return prefsFieldFromKey(rawKey)
+    }
+    /* ---------- 音频通知 preferences (host half owns playback) ----------
+       The browser's whole job here is switches, a volume number and the preview
+       buttons; every sound is played by the host process, including the previews
+       (that is the point: the preview must go through the same path as a real
+       notification, or testing it proves nothing). The keys below pass through
+       prefsFieldOf unchanged and equal the schema field names, so a switch can
+       never write an undeclared field. */
+    const AUDIO_ENABLED_KEY = 'audioEnabled'
+    const AUDIO_BOOT_KEY = 'audioBoot'
+    const AUDIO_TURN_START_KEY = 'audioTurnStart'
+    const AUDIO_TURN_DONE_KEY = 'audioTurnDone'
+    const AUDIO_VOLUME_KEY = 'audioVolume'
+    const AUDIO_HUMAN_ONLY_KEY = 'audioHumanOnly'
+    const AUDIO_DIAG_KEY = 'audioDiag'
+    const AUDIO_SOUND_DIR_KEY = 'audioSoundDir'
+    const AUDIO_STATE_URL = '/theme-endfield/audio/state'
+    const AUDIO_PREVIEW_URL = '/theme-endfield/audio/preview'
+    const AUDIO_ATTENTION_URL = '/theme-endfield/audio/attention'
+    /* ---------- 顶部余额胶囊 (host half owns the balance query) ----------
+       The page cannot reach the account service itself — only Host consumers
+       can obtain the request credential — so the capsule polls the host-side
+       route below and renders whatever it returns. */
+    const BALANCE_URL = '/theme-endfield/balance'
+    const BALANCE_POLL_MS = 60000
+    // The pricing window ticks every second (countdown to the next edge).
+    const BALANCE_TICK_MS = 1000
+    // The capsule opens as the brand panel and collapses into the balance row
+    // once the first account answer lands (success or failure — an offline host
+    // must not leave the brand pose up forever). MIN keeps the brand readable on
+    // a fast network; MAX is the cap when nothing ever answers.
+    const BALANCE_BOOT_MIN_MS = 900
+    const BALANCE_BOOT_MAX_MS = 5000
+    /* ---------- 渠道额度 (dsh-codearts-auth / jet-hub) ----------
+       When the session's model directory names one of the providers the
+       dsh-codearts-auth plugin serves, the capsule swaps the DeepSeek wallet
+       read for that channel's remaining credits. The numbers come over the
+       same management RPC the plugin's own client uses —
+       connection.rpc.call('/api', 'jet-hub', { method: 'usage.badge', ... }) —
+       so session credentials and the host-side badge cache (TTL 120s, failure
+       TTL 15s) come for free; the page only ever names the provider.
+       The id table IS the plugin's contract: usage.badge answers for these
+       twelve, and anything else — notably the built-in DeepSeek models — keeps
+       the wallet display, so an absent plugin can never blank the capsule. */
+    const JET_HUB_RPC_SCOPE = '/api'
+    const JET_HUB_RPC_CHANNEL = 'jet-hub'
+    const JET_HUB_PROVIDER_LABELS = {
+      codearts: 'CodeArts',
+      buddy: 'CodeBuddy',
+      workbuddy: 'WorkBuddy',
+      lobsterai: 'LobsterAI',
+      qoder: 'Qoder',
+      qodercn: 'Qoder CN',
+      trae: 'TRAE',
+      cline: 'Cline',
+      loomy: 'Loomy',
+      raccoon: 'Raccoon',
+      minimax: 'MiniMax',
+      zcode: 'ZCode',
+      opencode: 'OpenCode',
+    }
+    // Default ON for the master switch and both live slots; default OFF for the
+    // diagnostics switch, so the host console stays quiet unless asked.
+    const isAudioOn = () => prefsGet(AUDIO_ENABLED_KEY) !== '0'
+    const isAudioBootOn = () => prefsGet(AUDIO_BOOT_KEY) !== '0'
+    const isAudioStartOn = () => prefsGet(AUDIO_TURN_START_KEY) !== '0'
+    const isAudioDoneOn = () => prefsGet(AUDIO_TURN_DONE_KEY) !== '0'
+    const isAudioHumanOnly = () => prefsGet(AUDIO_HUMAN_ONLY_KEY) !== '0'
+    const isAudioDiagOn = () => prefsGet(AUDIO_DIAG_KEY) === '1'
+    const readAudioVolume = () => {
+      const parsed = Number.parseInt(prefsGet(AUDIO_VOLUME_KEY), 10)
+      return Number.isFinite(parsed) ? Math.min(100, Math.max(0, parsed)) : 100
+    }
+    const readAudioSoundDir = () => prefsGet(AUDIO_SOUND_DIR_KEY) || ''
+    /** Ask the host to play one slot through the real notification path. */
+    const previewSlot = (slot) => {
+      if (typeof fetch !== 'function') return Promise.resolve({ played: false, why: 'no fetch' })
+      return fetch(AUDIO_PREVIEW_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slot }),
+      }).then(
+        (res) => res.json().catch(() => ({ played: false, why: 'bad response' })),
+        (error) => ({ played: false, why: String(error && error.message ? error.message : error) }),
+      )
+    }
+    /* ---------- 需要你回应：界面观察器 ----------
+       WHY THIS EXISTS. The host-side seams that would normally carry this moment
+       (`approval/request`, `user-questions/request`, raised by dsh-user-approval
+       and dsh-tool-ask-user) do not fire in every deployment. Measured here: with
+       the theme plugin mounted, a question was on screen and ANSWERED while the
+       host half's counter stayed at 0 — because `ask_user_question` in this
+       composition is provided outside the profile's plugin stack, so
+       `dsh-tool-ask-user` never runs and the waterfall is never raised.
+
+       The UI is therefore the only place where "a human must act" is always real.
+       The host still owns the sound (switch, volume, debounce) — the page only
+       reports that a confirmation box appeared. The host-side listeners stay in
+       place for compositions where they DO fire; both paths end at the same slot
+       and the host's debounce collapses a double report into one sound.
+
+       ANCHORS: only the per-panel DATA ATTRIBUTES, never a class name.
+
+       A class-based first attempt was tried and it mis-fired in the field:
+       `[class*='_card']` matches 15 different components across the installed
+       client packages (model selector, agent-preset picker, …) and
+       `[class*='_frame']` matches 8, so opening any such card rang the attention
+       sound while no confirmation box was on screen. What the panels actually
+       expose, verified against the installed packages, is one stable attribute
+       each:
+         approval panel    <div data-approval-key="…">
+         plan review panel <div data-plan-review-key="…">
+         question dialog   <div data-question-key="…">
+
+       A marker that disappears in a future UI release silences this feature
+       without breaking anything — hence the counter in the settings page, which
+       is the only way to notice that the anchors stopped matching. */
+    const ATTENTION_MARKERS = [
+      { kind: 'approval', selector: '[data-approval-key]' },
+      { kind: 'plan-review', selector: '[data-plan-review-key]' },
+      { kind: 'question', selector: '[data-question-key]' },
+    ];
+    // Exposed on the module so a test can assert the anchors stay semantic (see
+    // exports.__attentionMarkers at the bottom of this file).
+    module.exports.__attentionMarkers = ATTENTION_MARKERS;
+    /** Which kind of pending interaction is on screen right now, if any. */
+    const detectPendingInteraction = () => {
+      if (typeof document === 'undefined' || typeof document.querySelector !== 'function') return null
+      for (const marker of ATTENTION_MARKERS) {
+        try {
+          if (document.querySelector(marker.selector) !== null) return marker.kind
+        } catch (e) { /* malformed selector: treat as absent */ }
+      }
+      return null
+    }
+    /** Tell the host a confirmation box appeared; it decides whether to sound. */
+    const reportAttention = (kind) => {
+      if (typeof fetch !== 'function') return Promise.resolve({ played: false, why: 'no fetch' })
+      return fetch(AUDIO_ATTENTION_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind }),
+      }).then(
+        (res) => res.json().catch(() => ({ played: false, why: 'bad response' })),
+        (error) => ({ played: false, why: String(error && error.message ? error.message : error) }),
+      )
+    }
+    const prefsListeners = []
+    const prefsLocal = Object.assign({}, PREFS_FIELD_DEFAULTS) // schema defaults, for boot / no transport
+    // The subset of prefsLocal a USER has actually edited this session. It is what
+    // prefsGetValue overlays on the fetched section: prefsLocal as a whole carries
+    // the shipped defaults, so overlaying all of it would shadow the very values
+    // the host just served (watermark off would read back as its default on).
+    const prefsLocalEdited = new Set()
+    // Fields a panel toggle changed so far but that have not yet been durably
+    // committed to the host scope. If the scope was not ready at apply() time and
+    // only appears later, these are replayed so a pre-bind edit still persists
+    // instead of silently living in page-only memory.
+    const prefsDirty = new Set()
+    // Fields whose value THIS SESSION changed (see prefsSet), regardless of where
+    // that edit currently stands. Used to tell "the host already holds this value"
+    // apart from "the user put it back to a value the host happens to hold":
+    // only the former means there is nothing left to persist.
+    const prefsEdited = new Set()
+    let prefsFieldValue = null // last schema-resolved user+base+defaults section from the scope, if any
+    /* The bound settings transport: a DSH 0.1.7 `ConfigForm` or a legacy
+       `settingsScope`. Both answer getSnapshot()/subscribe()/set(), which is
+       all the store below needs; `prefsScopeKind` records which one it is (for
+       diagnostics and the write-settlement contract). */
+    let prefsScope = null
+    let prefsScopeKind = null // 'configForms' | 'settingsScope' | null
+    let prefsScopeNs = null // the namespace / profile entry id the scope came from
+    let prefsUnsubscribe = null // disposer of the active scope subscription, if any
+    let prefsBindTimer = null // retry handle for a settings transport that arrives late
+    let prefsRetryTimer = null // bounded retry for held edits whose ready cue has not arrived
+    let prefsSettleTimer = null // bounded settle watch for a transport bound before it was ready
+    // Max held-edit retry passes. The ready transition is normally the cue; this
+    // bounded timer is the safety net for a mirror whose first describe predates
+    // a late host registration and sees no document commit to rerun on.
+    const PREFS_RETRY_LIMIT = 20 // ~20 * 500ms = up to ~10s after the last held edit
+    let prefsRetryCount = 0
+    // True while prefsReplayDirty is mid-pass. A normal DSH scope.set is async,
+    // but the mirror can fold a ready snapshot in synchronously (and document
+    // mocks/transitions too), which would re-enter the replay from the theme's
+    // own subscription and write the same held edits twice. The bus flag makes a
+    // single replay pass authoritative; re-entrant calls become no-ops.
+    let prefsReplayBusy = false
+    /* Theme layers install *their* reconcile here once they exist (updated from
+       the bottom of apply) so a transport event can live-apply a real change. */
+    let reconcileFromPrefs = null
+    /* True once an authoritative (status:'ready') section has been read for THIS
+       page load, plus the one-shot hook the startup surfaces that depend on such a
+       section install below. See prefsMarkSettled. */
+    let prefsSettledOnce = false
+    let onPrefsSettled = null
+    /* Whether the settings page has rendered its body, for the boot report: a
+       report from a page whose settings page was never opened is expected to
+       show nothing, and must not be mistaken for a failure. */
+    let panelMounted = false
+    /* --- transport selection ------------------------------------------------
+       Two DSH generations expose the same durable-preference seam under
+       different names, and the theme has to work on both without throwing on
+       whichever is absent:
+
+         0.1.7-rc.1   cfg = ctx.get('configForms')   (the settings domain's
+                      shared-form service)
+                      cfg.get(<profile entry id>) -> ConfigForm with
+                      getSnapshot() / subscribe() / set() / unset() / mutate()
+                      and a snapshot of { status, value, base, user, revision,
+                      writable, mode }. set() returns Promise<boolean>: false
+                      means the Host refused or SKIPPED the write (the classic
+                      case being memory mode on a non-loopback page).
+         <=0.1.5-rc.2 binder = ctx.get('settingsScope') / ctx.settingsScope
+                      binder.bind({ namespace, decode }) -> scope with the same
+                      snapshot fields, and a fire-and-forget set().
+
+       Same snapshot vocabulary, same write intent, so everything downstream of
+       acquisition is shared; only the lookup, the namespace string and the
+       settlement of set() differ. `configForms` is tried FIRST because on
+       0.1.7 the legacy service does not exist at all.
+
+       A ConfigForm is keyed by the PROFILE ENTRY ID, which the patch layer
+       assigns: this package's own bundle patch inserts `theme-endfield`, but a
+       hand-written insert may use the package name and the loader's tree path
+       prefixes include groups with `include:`. PREFS_ENTRY_CANDIDATES lists the
+       spellings this package can be installed under, in likelihood order.
+       Acquisition prefers whichever candidate the Host actually SERVES and
+       otherwise binds the first one immediately: a form is only a lazy view over
+       the shared mirror, so binding early is what lets a slow boot deliver its
+       section late instead of losing that page load's settings entirely. A wrong
+       guess self-heals — while the bound form reports 'unavailable' and the
+       mirror reloads, prefsOnScopeChange moves the binding to whichever
+       candidate is served. */
+    const PREFS_ENTRY_CANDIDATES = [
+      PREFS_ENTRY,                   // this package's cordis.patch.yml row id
+      'include:' + PREFS_ENTRY,      // loader tree path when bundle-mounted
+      PREFS_NS,                      // a row inserted under the old namespace name
+      'include:' + PREFS_NS,
+    ]
+    /* The 0.1.7 shared-form service, or undefined on a host that has none. Both
+       access forms are tried: the injected-property spelling DSH's own client
+       plugins use, then the optional-lookup form this module has always used. */
+    const getConfigForms = () => {
+      try {
+        if (ctx.configForms !== undefined && ctx.configForms !== null
+          && typeof ctx.configForms.get === 'function') return ctx.configForms
+      } catch (e) { /* property may be a getter that throws when not available */ }
+      try {
+        const forms = ctx.get('configForms')
+        if (forms !== undefined && forms !== null && typeof forms.get === 'function') return forms
+      } catch (e) { /* optional service lookup */ }
+      return undefined
+    }
+    // Try the idiomatic injected-property access first (how DSH client plugins like
+    // dsh-client-locale consume services — exports.inject plus `ctx.xxx`), then
+    // the lookup form this module has historically used for optional services.
+    const getSettingsScopeBinder = () => {
+      try {
+        if (ctx.settingsScope !== undefined && ctx.settingsScope !== null
+          && typeof ctx.settingsScope.bind === 'function') return ctx.settingsScope
+      } catch (e) { /* property may be a getter that throws when not available */ }
+      try { return ctx.get('settingsScope') } catch (e) { return undefined }
+    }
+    /* The namespaces the Host's describe view actually SERVES, for diagnostics.
+       This is the one fact that tells "the host half exported no Config" apart
+       from "the client bound an entry spelling this install does not use": both
+       leave the bound form unserved, and only the served list says which one
+       happened. Returns null while the mirror has not answered yet. */
+    const prefsServedNamespaces = () => {
+      try {
+        const forms = getConfigForms()
+        if (forms === undefined || typeof forms.describe !== 'function') return null
+        const mirrored = forms.describe().getSnapshot()
+        const view = mirrored && mirrored.view
+        if (!view || !Array.isArray(view.namespaces)) return null
+        return view.namespaces.map((row) => row && row.ns)
+      } catch (e) { return null }
+    }
+    /* Snapshot of any transport object, or null when it cannot be read. */
+    const prefsSnapshotOf = (scope) => {
+      if (!scope || typeof scope.getSnapshot !== 'function') return null
+      try { return scope.getSnapshot() } catch (e) { return null }
+    }
+    /* The first CANDIDATE spelling the Host actually serves (status 'ready'),
+       or null. Kept separate from acquisition because it is also the re-check a
+       bound-but-unserved form runs when the mirror reloads. */
+    const prefsFindReadyForm = () => {
+      const forms = getConfigForms()
+      if (forms === undefined) return null
+      for (const ns of PREFS_ENTRY_CANDIDATES) {
+        let form = null
+        try { form = forms.get(ns) } catch (e) { form = null }
+        if (!form || typeof form.getSnapshot !== 'function') continue
+        const snap = prefsSnapshotOf(form)
+        if (snap !== null && snap.status === 'ready') return { scope: form, kind: 'configForms', ns }
+      }
+      return null
+    }
+    /* Acquire the transport for this page.
+       A SERVED candidate wins outright. Otherwise the FIRST candidate is bound
+       anyway, even while the mirror is still 'loading' or reports it
+       'unavailable': a ConfigForm always exists (it is a lazy view over the
+       shared mirror), and binding it immediately is what lets a slow or
+       later-served Host still deliver its section through the subscription —
+       exactly how the legacy binder behaved. A wrong guess is not fatal:
+       prefsOnScopeChange re-selects as soon as another candidate is served. */
+    const acquirePrefsScope = () => {
+      const ready = prefsFindReadyForm()
+      if (ready !== null) return ready
+      const forms = getConfigForms()
+      if (forms !== undefined) {
+        for (const ns of PREFS_ENTRY_CANDIDATES) {
+          let form = null
+          try { form = forms.get(ns) } catch (e) { form = null }
+          if (form && typeof form.getSnapshot === 'function') return { scope: form, kind: 'configForms', ns }
+        }
+      }
+      const binder = getSettingsScopeBinder()
+      if (binder !== undefined && binder !== null && typeof binder.bind === 'function') {
+        let scope = null
+        try { scope = binder.bind({ namespace: PREFS_NS, decode: prefsResolveSection }) } catch (e) { dbg('bind threw', e && e.message); scope = null }
+        if (scope !== null && scope !== undefined) return { scope, kind: 'settingsScope', ns: PREFS_NS }
+      }
+      return null
+    }
+    /* A schema-accepted section from the transport, else in-memory defaults
+       (PREFS_FIELD_DEFAULTS is the fallback BEFORE a first section arrives).
+       Fields the user has edited this session are overlaid ON TOP on purpose: a
+       toggle writes prefsLocal synchronously and only then does the host echo the
+       section back, so reading the fetched section first would show the panel the
+       new state while the theme still acted on the old one until the round-trip
+       closed. Only EDITED fields are overlaid (see prefsLocalEdited), so a served
+       value for any other field is still what the theme reads. */
+    let prefsOverlayCache = null
+    const prefsGetValue = () => {
+      const base = prefsFieldValue || PREFS_FIELD_DEFAULTS
+      if (prefsLocalEdited.size === 0) return base
+      /* Hot path: the contour loop and the watermark observer read prefs many
+         times per frame. Rebuilding this overlay per read allocated a fresh
+         ~24-key object every time; caching it against the base-section
+         REFERENCE keeps those reads allocation-free. prefsSet invalidates on
+         every edit (the only place prefsLocalEdited grows), and a new section
+         from the host arrives as a different `base` reference, so a stale pair
+         can never be served. Callers treat the result as read-only — prefsGet
+         is the sole runtime consumer and only reads single fields. */
+      if (prefsOverlayCache !== null && prefsOverlayCache.base === base) return prefsOverlayCache.out
+      const out = Object.assign({}, base)
+      for (const field of prefsLocalEdited) out[field] = prefsLocal[field]
+      prefsOverlayCache = { base, out }
+      return out
+    }
+    /** read one field as its raw stored string: <stored-or-default>, never null. */
+    const prefsGet = (rawKey) => {
+      const field = prefsFieldOf(rawKey)
+      const sec = prefsGetValue()
+      if (sec && Object.prototype.hasOwnProperty.call(sec, field)) return String(sec[field])
+      return PREFS_FIELD_DEFAULTS[field]
+    }
+    /** subscribe to any change of the whole namespace (transport or local). */
+    const prefsSubscribe = (listener) => {
+      prefsListeners.push(listener)
+      return () => {
+        const i = prefsListeners.indexOf(listener)
+        if (i >= 0) prefsListeners.splice(i, 1)
+      }
+    }
+    const prefsEmit = () => {
+      for (const l of prefsListeners.slice()) { try { l() } catch (e) { /* keep going */ } }
+      if (reconcileFromPrefs) try { reconcileFromPrefs() } catch (e) { /* keep going */ }
+    }
+    /* The FIRST authoritative section of a page load is a moment of its own: it is
+       the instant the stored preferences become knowable at all. On a real page
+       load the Host serves that section over the wire, so every read made while
+       apply() runs — including the boot plate's — falls back to the schema
+       defaults. A surface whose whole job happens at startup therefore cannot act
+       on its apply()-time read; it hangs off this transition instead.
+
+       Fires at most once per page load, and only AFTER the section has been
+       resolved (prefsFieldValue assigned) and any legacy migration has run, so a
+       hook reading prefsGet() sees final values rather than a half-applied
+       snapshot. Deliberately not re-fired by later sections: a section that
+       changes later is an ordinary runtime edit, not a page load. */
+    const prefsMarkSettled = () => {
+      if (prefsSettledOnce) return
+      prefsSettledOnce = true
+      if (onPrefsSettled) try { onPrefsSettled() } catch (e) { /* keep going */ }
+    }
+    const dbg = (...a) => { try { if (typeof console !== 'undefined' && console.warn) console.warn('[dsh-theme-endfield:prefs]', ...a) } catch (e) { /* noop */ } }
+
+    /* --- Durable write gate -----------------------------------------------
+       A scope snapshot from @deepseek-ai/dsh-client-ui-settings carries three
+       flags that must ALL hold before a scope.set can durably land:
+         mode    === 'host'   loopback page syncing the Host document.
+                              'memory' (non-loopback) never persists.
+         status  === 'ready'  the Host's describe view actually SERVES this
+                              namespace and a decoded value stands. It stays
+                              'loading' before the first accepted section and
+                              becomes 'unavailable' when the namespace is NOT in
+                              the host's served list (the host half has not run
+                              its ctx.settings.register(...) yet, or the mirror
+                              last fetched before it appeared). A scope.set into
+                              a 'loading'/'unavailable' host scope reaches no
+                              durable store.
+         writable=== true     the Host document accepts writes.
+       Gating on snap.writable ALONE is the old bug: a host-mode describe view
+       answers writable=true even while this namespace is still unserved, so the
+       old code fired scope.set into a namespace the host had not registered,
+       cleared the dirty mark and logged the misleading
+       `commit ... status= unavailable` warn — the preference kept working for
+       the page session but vanished on the next reload. We issue a real wire
+       write only once the namespace is genuinely served, and keep the edit
+       dirty so a later ready transition (re)plays it. */
+    const prefsSnap = () => {
+      const scope = prefsScope
+      if (!scope) return null
+      try { return scope.getSnapshot() } catch (e) { return null }
+    }
+    const prefsDurablyServed = (snap) => !!snap && snap.mode === 'host' && snap.status === 'ready' && !!snap.writable
+    /* One field write through the bound transport, with one settlement contract
+       for both generations. The legacy scope.set() is fire-and-forget; a
+       ConfigForm's set() returns Promise<boolean>, where false means the Host
+       REFUSED or SKIPPED the write (most commonly memory mode on a non-loopback
+       page) and a rejection means the wire call failed. Either way the edit is
+       put back into prefsDirty so a later ready/replay pass retries it instead
+       of the setting looking saved while nothing reached the document.
+       Deliberately NOT marked dirty up front for a thenable write: DSH's own
+       client folds an ACCEPTED write into the shared mirror before the returned
+       promise resolves, so a synchronous dirty mark would make every toggle
+       emit a redundant second write. A late repair beats a duplicate write.
+       @returns true when the write was issued (not when it was accepted). */
+    const prefsWriteField = (field, value) => {
+      const scope = prefsScope
+      if (!scope || typeof scope.set !== 'function') return false
+      let result = null
+      try { result = scope.set(field, String(value)) } catch (e) {
+        dbg('set threw', field, e && e.message)
+        prefsDirty.add(field)
+        return false
+      }
+      if (result && typeof result.then === 'function') {
+        result.then((ok) => {
+          if (ok === false) {
+            dbg('set REFUSED by the host', field, value)
+            prefsDirty.add(field)
+            prefsScheduleRetry()
+          } else {
+            prefsDirty.delete(field)
+          }
+        }, (e) => {
+          dbg('set REJECTED', field, value, String(e && e.message || e))
+          prefsDirty.add(field)
+        })
+      } else {
+        prefsDirty.delete(field)
+      }
+      return true
+    }
+    /* Push edits recorded while the scope was not durably served as soon as it
+       is (bind catch-up + an unavailable/loading -> ready subscription both call
+       this). A dirty field is cleared only once it is WRITTEN to a served host
+       scope, or once the host's own FETCHED section already holds that exact
+       value. Guarded against races the same way as prefsCommit: a rejected async
+       write keeps the field for a later try. */
+    const prefsReplayDirty = () => {
+      if (prefsReplayBusy) return
+      if (prefsDirty.size === 0) return
+      prefsReplayBusy = true
+      try {
+        const snap = prefsSnap()
+        const durable = prefsDurablyServed(snap)
+        for (const field of Array.from(prefsDirty)) {
+          const local = prefsLocal[field]
+          const hostValue = snap && snap.value
+            ? (Object.prototype.hasOwnProperty.call(snap.value, field) ? String(snap.value[field]) : undefined)
+            : undefined
+          /* An edit the host ALREADY holds needs no write — provided the host
+             really holds it, rather than the user having just typed that value
+             back in. Those differ in exactly one case, and it is the one that
+             matters: the user reverts a field to a value the host's stale view
+             still reports (the pre-migration default is the common one), and
+             skipping the write would silently drop the revert. So only a field
+             this session never edited is cleared on equality; an edited field is
+             cleared by its write.
+             Equality with the shipped DEFAULT is likewise not a reason to clear:
+             the host may still hold a non-default value, and "put it back to the
+             default" is then a real edit that has to reach the document. */
+          if (local === hostValue && !prefsEdited.has(field)) {
+            prefsDirty.delete(field)
+            continue
+          }
+          if (!durable) continue
+          // Optimistically clear; a refused/rejected write puts the field back
+          // into prefsDirty from prefsWriteField's settlement handler.
+          if (prefsWriteField(field, local)) {
+            dbg('replayed held', field, '=', local)
+            prefsDirty.delete(field)
+          }
+        }
+      } finally {
+        prefsReplayBusy = false
+      }
+    }
+    /* Bounded safety net for a held edit whose "ready" cue never arrives on its
+       own. A normal scope subscription fires on the ready transition and replays
+       immediately; this is only for a mirror whose first describe predated a late
+       host registration and that sees no intermediate document commit / reconnect
+       to rerun on. Each tick simply calls prefsReplayDirty() again; once nothing
+       is held (all written) the loop stops itself. Stops after PREFS_RETRY_LIMIT
+       ticks so an environment where the namespace is genuinely never served does
+       not spin forever. */
+    const prefsStopRetry = () => {
+      if (prefsRetryTimer !== null && typeof clearTimeout === 'function') clearTimeout(prefsRetryTimer)
+      prefsRetryTimer = null
+      prefsRetryCount = 0
+    }
+    const prefsScheduleRetry = () => {
+      // Nothing held any more: no reason to keep ticking.
+      if (prefsDirty.size === 0) { prefsStopRetry(); return }
+      // A durably-served scope needs no timer — its subscription replays fast.
+      if (prefsDurablyServed(prefsSnap())) { prefsStopRetry(); return }
+      if (prefsRetryTimer !== null) return // already ticking
+      if (typeof setTimeout !== 'function') return // no timer environment
+      prefsRetryCount = 0
+      const tick = () => {
+        prefsRetryTimer = null
+        prefsRetryCount += 1
+        if (prefsRetryCount > PREFS_RETRY_LIMIT) { prefsStopRetry(); return }
+        if (prefsDirty.size === 0) { prefsStopRetry(); return }
+        if (prefsDurablyServed(prefsSnap())) { prefsStopRetry(); return }
+        prefsReplayDirty()
+        if (prefsDirty.size > 0) prefsRetryTimer = setTimeout(tick, 500)
+        else prefsStopRetry()
+      }
+      prefsRetryTimer = setTimeout(tick, 500)
+    }
+    const prefsCommit = (field, encoded) => {
+      // Best-effort durable write. A real wire write happens only while the
+      // scope is durably served (see the gate note above); before that we stay
+      // session-local, record the edit in prefsDirty and let prefsReplayDirty
+      // push it once the namespace is served. We deliberately do NOT
+      // prefsEmit() here: the caller's toggle already reconciles the layer it
+      // changes, and the authoritative echo arrives through the scope
+      // subscription below, so an immediate synchronous emit would do the same
+      // work twice.
+      const scope = prefsScope
+      if (scope) {
+        const snap = prefsSnapshotOf(scope)
+        if (prefsDurablyServed(snap)) {
+          dbg('commit', field, '=', encoded, 'via', prefsScopeKind, prefsScopeNs, 'status=', snap.status, 'mode=', snap.mode)
+          prefsWriteField(field, encoded)
+          return true
+        }
+        dbg('held (namespace not durably served yet)', field, '=', encoded, 'snap=', snap === null ? null : { status: snap.status, writable: snap.writable, mode: snap.mode }, 'hostServes=', prefsServedNamespaces())
+      } else {
+        dbg('commit with NO settings transport bound (page-local only)', field, encoded, 'hostServes=', prefsServedNamespaces())
+      }
+      prefsDirty.add(field)
+      prefsScheduleRetry()
+      return false
+    }
+    /** write one field with the exact stored-string value the UI derives. */
+    const prefsSet = (rawKey, encoded) => {
+      const field = prefsFieldOf(rawKey)
+      prefsLocal[field] = String(encoded)
+      prefsLocalEdited.add(field)
+      prefsEdited.add(field)
+      prefsOverlayCache = null
+      prefsCommit(field, prefsLocal[field])
+    }
+    /* Normalize a section the transport handed us to a full set of SCHEMA
+       fields: the declared fields the mirror resolved, plus schema defaults for
+       any it has not. Field names come from the one table (prefsFieldOf), so a
+       section is keyed exactly the way the theme reads it. */
+    const prefsResolveSection = (section) => {
+      const out = Object.assign({}, PREFS_FIELD_DEFAULTS)
+      if (section === null || typeof section !== 'object') return out
+      for (const field of Object.keys(PREFS_FIELD_DEFAULTS)) {
+        if (Object.prototype.hasOwnProperty.call(section, field)) out[field] = String(section[field])
+      }
+      return out
+    }
+    /* Sections written by the BUILD THAT SHIPPED THE FIELD-NAME BUG still carry
+       the pre-migration spelling of a compound field ('contourAnim' written as
+       'contour-anim'), because that write landed on an undeclared key the schema
+       passes through instead of storing it into the declared field. Without this
+       pass the user's stored choice is ignored and the field default silently
+       wins — for them the switch would look like it reset again after the fix.
+       Returns the [field, value] pairs whose recorded legacy value is the one to
+       honour, i.e. the edits that need re-committing onto the declared field.
+
+       WHEN IS THE DECLARED FIELD THE USER'S OWN VALUE? This is the whole
+       question, because a fetched section ALWAYS carries every declared field:
+       the schema merges its defaults into the stored section, so
+       `hasOwnProperty` cannot tell a user-set value from an implied default.
+       And in practice only ONE signal can: a value that differs from the shipped
+       default. A declared field sitting at its default is indistinguishable from
+       an untouched one — the section is the merged view, so nothing survives in
+       it to say whether the document stored that default or the schema inserted
+       it. Therefore:
+
+         declared absent or === default  -> nothing recorded a choice for this
+                                            field, so the stray legacy key is the
+                                            only trace of one: honour it.
+         declared set to anything else    -> a correctly-writing build stored it,
+                                            so it wins and the stray key is
+                                            ignored. (Never let the pre-migration
+                                            spelling overwrite a real edit.)
+
+       That makes the migration idempotent in the good direction: after the value
+       is re-committed, the declared field is non-default and the stray key can
+       never win again. */
+    const prefsLegacyFields = (section) => {
+      const out = []
+      if (section === null || typeof section !== 'object') return out
+      for (const field of Object.keys(PREFS_FIELD_TO_LEGACY_KEY)) {
+        const legacy = PREFS_FIELD_TO_LEGACY_KEY[field]
+        if (!Object.prototype.hasOwnProperty.call(section, legacy)) continue
+        const value = section[legacy]
+        if (value === undefined || value === null || String(value) === '') continue
+        const declared = Object.prototype.hasOwnProperty.call(section, field) ? String(section[field]) : undefined
+        if (declared !== undefined && declared !== PREFS_FIELD_DEFAULTS[field]) continue
+        out.push([field, String(value)])
+      }
+      return out
+    }
+    /* Re-commit a legacy-spelled value onto the declared field, once. Writes go
+       through prefsSet, i.e. through the same durable gate as a user toggle: on a
+       served scope it lands on the schema field immediately, on one that is not
+       served yet it is held and replayed (and mirrored locally, so the theme
+       behaves correctly meanwhile). The stale key itself is left in the document
+       — the theme no longer declares or reads it, and rewriting a section it does
+       not own would be a bigger hammer than the bug deserves. */
+    const prefsMigrated = new Set()
+    // The section object this pass has already run against. A section is a fresh
+    // object on every transport update, so identity is what says "this document
+    // has not been examined yet" — and it keeps the pass from re-running against
+    // its own writes within the same snapshot.
+    let prefsMigratedFor = null
+    const prefsMigrateLegacy = (section) => {
+      if (section === null || typeof section !== 'object') return
+      if (section === prefsMigratedFor) return
+      prefsMigratedFor = section
+      for (const [field, value] of prefsLegacyFields(section)) {
+        if (prefsMigrated.has(field)) continue
+        prefsMigrated.add(field)
+        dbg('migrating legacy-spelled field', PREFS_FIELD_TO_LEGACY_KEY[field], '->', field, '=', value)
+        prefsSet(field, value)
+      }
+    }
+    /* Everything a bound transport needs after acquisition: adopt the initial
+       snapshot, subscribe, then run the catch-up / legacy-repair / settled
+       passes the single-transport version already ran. */
+    /* Drop the active transport subscription, if any. Called by the re-selection
+       below (switching to a different entry spelling) and by run teardown. */
+    const prefsReleaseSubscription = () => {
+      if (typeof prefsUnsubscribe === 'function') {
+        try { prefsUnsubscribe() } catch (e) { /* the transport may already be gone */ }
+      }
+      prefsUnsubscribe = null
+    }
+    const prefsOnScopeChange = (scope) => {
+      const snap = prefsSnapshotOf(scope)
+      if (snap === null) return
+      /* Re-selection. A form bound before the mirror answered reports 'loading'
+         (bound while the Host was still sending its describe view) or
+         'unavailable' (this install does not use that entry spelling); the
+         moment the Host serves one of the OTHER candidates, move the binding
+         there instead of staying deaf to the real entry. Re-selection uses a
+         ready-only scan, so it can never bounce between two unserved
+         candidates.
+
+         'loading' is included in the trigger — not only 'unavailable' — because
+         a real boot binds during exactly that window: client.js reaches
+         acquirePrefsScope() while the mirror is still fetching, so the FIRST
+         candidate is bound with status:'loading'. If that guess is the wrong
+         spelling, the fix-up has to happen on the unserved side of the
+         transition; waiting for 'unavailable' alone misses a wrong form that
+         goes straight from 'loading' to a served other candidate. */
+      if ((snap.status === 'unavailable' || snap.status === 'loading') && prefsScopeKind === 'configForms') {
+        const ready = prefsFindReadyForm()
+        if (ready !== null && ready.ns !== prefsScopeNs) {
+          dbg('re-selecting settings entry', prefsScopeNs, '->', ready.ns)
+          prefsReleaseSubscription()
+          prefsScope = null
+          prefsScopeKind = null
+          prefsScopeNs = null
+          prefsBindScope(ready)
+          // A re-selection happens long after apply() (the mirror answered
+          // late), so the theme is already mounted and must reconcile onto the
+          // section that just arrived. Harmless at apply time, where no layer
+          // has installed its reconciler yet.
+          prefsEmit()
+          return
+        }
+      }
+      /* ONLY a status that cannot carry a section is ignored here. 'loading' is
+         deliberately NOT ignored: it is the state a real page load STARTS in
+         (the Host serves the section over the wire, so the bound form reports
+         status:'loading', writable:false, valueKeys:0 while apply() runs), and
+         the transition that matters — loading -> ready — is a single
+         subscription event. Returning early on 'loading' swallowed exactly that
+         event, so a section that settled after the bind never reached
+         prefsFieldValue, the held edits were never replayed onto it, and
+         prefsMarkSettled() never fired. Everything then fell back to the schema
+         defaults until the next reload, even though the Host had served the
+         user's values. The bounded settle watch usually rescued it, which is why
+         the failure was intermittent rather than total. */
+      if (snap.status !== 'ready' && snap.status !== 'unavailable' && snap.status !== 'loading') return
+      if (snap.status === 'ready' && snap.value !== undefined) prefsFieldValue = prefsResolveSection(snap.value)
+      // An unavailable/loading -> ready transition is precisely when an edit we
+      // HELD (see prefsCommit) can finally be written: replay any dirty fields
+      // the moment the namespace is durably served. prefsReplayDirty is a no-op
+      // when nothing is held or the scope is not yet served.
+      prefsReplayDirty()
+      // The FIRST served section is also the first chance to see a document the
+      // buggy build wrote (before that there is nothing to read), so the legacy
+      // repair runs here too — and again on any later section that has not been
+      // examined yet. Whatever it queues is replayed below.
+      prefsMigrateLegacy(snap.value)
+      prefsReplayDirty()
+      prefsEmit()
+      /* Deliberately last: the startup hook must read the section only after it
+         is resolved and migrated (and after prefsEmit has let the layer
+         reconciler mount a theme the settled section switched on), and it must
+         fire once rather than on every snapshot. */
+      if (snap.status === 'ready' && snap.value !== undefined) prefsMarkSettled()
+    }
+    const prefsBindScope = (acquired) => {
+      const scope = acquired.scope
+      prefsScope = scope
+      prefsScopeKind = acquired.kind
+      prefsScopeNs = acquired.ns
+      const initial = prefsSnapshotOf(scope)
+      if (initial) dbg('bound', acquired.kind, 'ns=', acquired.ns, '; initial status=', initial.status, 'writable=', initial.writable, 'mode=', initial.mode, 'valueKeys=', initial.value ? Object.keys(initial.value).length : 0)
+      if (initial && initial.status === 'ready' && initial.value !== undefined) {
+        prefsFieldValue = prefsResolveSection(initial.value)
+      }
+      /* The subscription disposer is RETAINED here (the single-transport version
+         dropped it): a ConfigForm is a shared, provider-owned controller, so the
+         run's teardown must remove this listener instead of leaking it into the
+         next run — see the prefs ctx.effect below. */
+      if (typeof scope.subscribe === 'function') {
+        try {
+          const unsubscribe = scope.subscribe(() => prefsOnScopeChange(scope))
+          if (typeof unsubscribe === 'function') prefsUnsubscribe = unsubscribe
+        } catch (e) { dbg('subscribe threw', e && e.message) }
+      }
+      // Catch up: an edit made before the scope settled must still persist. Replay
+      // only genuinely user-changed fields (those prefsSet recorded as dirty) that
+      // now differ from a freshly-fetched, durably-served host section.
+      prefsReplayDirty()
+      // Then repair a section the buggy build wrote with the pre-migration field
+      // spelling, and re-run the catch-up for whatever that migration queued.
+      prefsMigrateLegacy(initial && initial.value)
+      prefsReplayDirty()
+      /* A section that was ALREADY ready when the scope bound is authoritative on
+         the first read too. In practice no hook is installed yet at this point in
+         apply() (the boot-loader block below runs later), so this normally just
+         records the transition — the plate's own apply()-time read is already
+         correct when the section beat apply(), and that path is unchanged. */
+      if (initial && initial.status === 'ready' && initial.value !== undefined) prefsMarkSettled()
+      // Safety net for a transport bound before the Host served it (no-op when
+      // the section was ready already).
+      prefsStartSettleWatch(0)
+    }
+    /* Bounded settle watch for a transport that was bound before the Host served
+       it. The subscription is normally the cue — the shared describe mirror
+       re-derives every form on a reload and the store notifies on a snapshot
+       change — but a mirror that answers WITHOUT replacing the bound form's
+       snapshot (or that only ever serves a different entry spelling) would leave
+       this page load on schema defaults forever. This is the bounded safety net
+       the legacy generation had as its 250 ms binder poll: it re-checks a limited
+       number of times, moves to a newly served candidate spelling when one
+       appears, and stops the moment the bound snapshot is ready. */
+    const PREFS_SETTLE_LIMIT = 20 // ~20 * 500ms = up to ~10s after the bind
+    const prefsStartSettleWatch = (attempt) => {
+      if (prefsScope === null) return
+      /* A re-bind or a re-selection can start a new chain while an earlier one
+         is still pending; drop the old timer first so exactly one chain runs.
+         The passes are idempotent, but duplicate chains duplicate logs and
+         duplicate snapshot work. Clearing an already-fired handle is harmless. */
+      if (prefsSettleTimer !== null && typeof clearTimeout === 'function') clearTimeout(prefsSettleTimer)
+      prefsSettleTimer = null
+      const snap = prefsSnapshotOf(prefsScope)
+      if (snap !== null && snap.status === 'ready') {
+        /* The form is served but its store never emitted (or the value arrived
+           between acquisition and subscription). Run the same passes the
+           subscription would have run — adopt, replay, migrate, settle — unless
+           the bind already did them, then stop watching. */
+        if (prefsFieldValue === null || prefsDirty.size > 0) prefsOnScopeChange(prefsScope)
+        return
+      }
+      if (attempt >= PREFS_SETTLE_LIMIT) {
+        /* Give up loudly, once. This is the page load that will lose the user's
+           switches on the next reload, and the line below says which side is at
+           fault: boundNs/status describe the client's binding, hostServes lists
+           what the host actually serves (our entry id missing from it means the
+           host half exported no Config — see index.js). */
+        const finalSnap = prefsSnapshotOf(prefsScope)
+        dbg('settle watch gave up after', attempt, 'attempts; preferences stay page-local. boundNs=', prefsScopeNs, 'status=', finalSnap === null ? null : finalSnap.status, 'mode=', finalSnap === null ? null : finalSnap.mode, 'hostServes=', prefsServedNamespaces())
+        return
+      }
+      const ready = prefsFindReadyForm()
+      if (ready !== null && ready.ns !== prefsScopeNs) {
+        dbg('settle watch re-selecting settings entry', prefsScopeNs, '->', ready.ns)
+        prefsReleaseSubscription()
+        prefsScope = null
+        prefsScopeKind = null
+        prefsScopeNs = null
+        prefsBindScope(ready)
+        prefsEmit()
+        return
+      }
+      if (typeof setTimeout !== 'function') return
+      prefsSettleTimer = setTimeout(() => prefsStartSettleWatch(attempt + 1), 500)
+    }
+    /* One-shot boot report, logged ONLY when the store did not end up in the
+       healthy state (a served, settled, writable host section with nothing held).
+       "The switches reset on reload" has several causes that look identical from
+       the outside — the entry spelling is wrong, the mirror never answered, the
+       page is memory-backed, or an edit never reached the document — and each one
+       is a property of THIS machine's install. When everything is fine this says
+       nothing at all; when it is not, one line names the cause instead of leaving
+       it to guesswork. */
+    const prefsReportBoot = () => {
+      const snap = prefsSnapshotOf(prefsScope)
+      const healthy = snap !== null && snap.status === 'ready' && snap.mode === 'host'
+        && snap.writable === true && prefsDirty.size === 0
+      if (healthy) return
+      dbg('boot report (preferences did NOT reach a durable section):',
+        'boundNs=', prefsScopeNs, 'kind=', prefsScopeKind,
+        'status=', snap === null ? null : snap.status,
+        'mode=', snap === null ? null : snap.mode,
+        'writable=', snap === null ? null : snap.writable,
+        'valueKeys=', snap && snap.value ? Object.keys(snap.value).length : 0,
+        'settled=', prefsSettledOnce,
+        'dirty=', Array.from(prefsDirty),
+        'panelMounted=', panelMounted,
+        'hostServes=', prefsServedNamespaces(),
+        'candidates=', PREFS_ENTRY_CANDIDATES)
+    }
+    /* DIAG-ROUND5 (a host-vs-store value comparison printed on every load) was
+       removed here: its cause was confirmed and fixed by the durable
+       configForms transport, and dbg() is an unconditional console.warn, so the
+       probe had become pure console noise on healthy pages. */
+    let prefsBootReportTimer = null
+    if (typeof setTimeout === 'function') {
+      // After the mirror has had a fair chance to answer (the settle watch's own
+      // budget), state the outcome once whether or not it worked. Tracked so the
+      // dispose effect below can revoke it: after a teardown prefsScope is null,
+      // which reads as "unhealthy" and would print a misleading boot report for
+      // a page that is simply gone.
+      prefsBootReportTimer = setTimeout(prefsReportBoot, PREFS_SETTLE_LIMIT * 500 + 500)
+    }
+    /* Repeatedly try to obtain a settings transport until one is servable. DSH
+       web mounts plugin rows concurrently, so the settings service (and its
+       describe mirror) can legitimately settle AFTER this theme's apply() runs;
+       without this retry a single synchronous attempt that raced would leave
+       prefsScope null forever and every subsequent toggle would silently stay
+       page-local — the exact "works now, gone on refresh" symptom. */
+    const rebindPrefs = (attempt) => {
+      if (prefsScope !== null) return
+      if (attempt > 40) { dbg('gave up binding a settings transport after retries; staying in-memory', 'hostServes=', prefsServedNamespaces()); return }
+      let acquired = null
+      try { acquired = acquirePrefsScope() } catch (e) { dbg('acquisition threw', e && e.message); acquired = null }
+      if (acquired === null) {
+        if (typeof setTimeout === 'function') {
+          if (attempt % 8 === 0) dbg('waiting for a settings transport (attempt', attempt, ')')
+          prefsBindTimer = setTimeout(() => rebindPrefs(attempt + 1), 250)
+        }
+        return
+      }
+      try {
+        prefsBindScope(acquired)
+      } catch (e) {
+        // A throw in the middle of a bind leaves nothing usable behind: release
+        // the slot and keep retrying instead of pretending a broken transport is
+        // bound.
+        prefsScope = null
+        prefsScopeKind = null
+        prefsScopeNs = null
+        dbg('bind failed', e && e.message)
+        if (typeof setTimeout === 'function') prefsBindTimer = setTimeout(() => rebindPrefs(attempt + 1), 250)
+      }
+    }
+    // Kick off the (re)trying transport acquisition.
+    rebindPrefs(0)
+    // Dispose on run teardown (mirrors ctx.effect owned resources). One effect
+    // owns the whole store — the earlier pair was a strict duplicate — and it
+    // also releases the transport subscription: a ConfigForm is shared and
+    // provider-owned, so leaving our listener behind would leak it into the
+    // next run of this plugin in the same page.
+    ctx.effect(() => () => {
+      prefsListeners.length = 0
+      prefsReleaseSubscription()
+      prefsScope = null
+      prefsScopeKind = null
+      prefsScopeNs = null
+      prefsFieldValue = null
+      onPrefsSettled = null
+      if (prefsBindTimer !== null && typeof clearTimeout === 'function') clearTimeout(prefsBindTimer)
+      prefsBindTimer = null
+      if (prefsRetryTimer !== null && typeof clearTimeout === 'function') clearTimeout(prefsRetryTimer)
+      prefsRetryTimer = null
+      if (prefsSettleTimer !== null && typeof clearTimeout === 'function') clearTimeout(prefsSettleTimer)
+      prefsSettleTimer = null
+      if (prefsBootReportTimer !== null && typeof clearTimeout === 'function') clearTimeout(prefsBootReportTimer)
+      prefsBootReportTimer = null
+    })
+
     const RADIUS_KEY = 'dsh-theme-endfield-radius'
     const ENABLED_KEY = 'dsh-theme-endfield-enabled'
-    const isEnabled = () => (typeof localStorage !== 'undefined' && localStorage.getItem(ENABLED_KEY)) !== '0'
+    const isEnabled = () => prefsGet(ENABLED_KEY) !== '0'
+    const GLASS_KEY = 'dsh-theme-endfield-glass'
+    const GLASS_OPTIONS = ['off', 'subtle', 'standard', 'strong']
+    const readGlass = () => {
+      const value = prefsGet(GLASS_KEY)
+      return GLASS_OPTIONS.includes(value) ? value : 'off'
+    }
+    const syncGlass = () => {
+      if (typeof document === 'undefined' || document.body === null) return
+      const value = readGlass()
+      if (isEnabled() && value !== 'off') document.body.setAttribute?.('data-endfield-glass', value)
+      else document.body.removeAttribute?.('data-endfield-glass')
+    }
     const syncRadiusMode = () => {
       // The bundle can run before <body> exists (see runLoader's DOMContentLoaded
       // deferral for the same window); a classList touch on null would throw and
       // kill the whole install. syncPaletteClass guards the same way.
       if (typeof document === 'undefined' || document.body === null) return
-      const mode = (typeof localStorage !== 'undefined' && localStorage.getItem(RADIUS_KEY)) || 'square'
+      const mode = prefsGet(RADIUS_KEY) || 'square'
       if (mode === 'round') document.body.classList.add('theme-endfield-round')
       else document.body.classList.remove('theme-endfield-round')
     }
@@ -74,17 +1242,17 @@ function apply(ctx) {
        overrides are var(--edge-accent) references, those tokens re-resolve on the
        same flip — no JS repaint, no theme.overrideTokens() re-registration.
 
-       'valley' (谷地黄, signal yellow) is the DEFAULT, so an unset key and any
+       'valley' (谷地黄, signal yellow) is the DEFAULT, so an unset field and any
        unrecognised value both mean yellow. Only the exact string 'wuling' selects
-       武陵青, which keeps a corrupt localStorage value from silently changing the
-       shipped look.
+       武陵青, which keeps a corrupt stored value (schema rejects / outside the
+       fallback) from silently changing the shipped look.
 
        The one surface a class cannot reach is the contour canvas, which is painted
        by JS — hence syncPalette() redraws it, and the observer below catches a flip
        made in another tab or by the browser restoring state. */
     const PALETTE_KEY = 'dsh-theme-endfield-palette'
     const PALETTE_CLASS = 'theme-endfield-wuling'
-    const readPalette = () => ((typeof localStorage !== 'undefined' && localStorage.getItem(PALETTE_KEY)) === 'wuling' ? 'wuling' : 'valley')
+    const readPalette = () => (prefsGet(PALETTE_KEY) === 'wuling' ? 'wuling' : 'valley')
     /* Read from the DOM, not from storage: the canvas must match what is actually
        on screen. While the theme is switched off the class is absent, so the sheet
        keeps its default palette instead of following an ignored preference. */
@@ -116,12 +1284,19 @@ function apply(ctx) {
        pointer-events:none layer cannot be hit-tested. */
     const WATERMARK_KEY = 'dsh-theme-endfield-watermark'
     const WATERMARK_PERSIST_KEY = 'dsh-theme-endfield-watermark-persist'
-    const isWatermarkOn = () => (typeof localStorage !== 'undefined' && localStorage.getItem(WATERMARK_KEY)) !== '0'
+    const isWatermarkOn = () => prefsGet(WATERMARK_KEY) !== '0'
     // Default OFF: the hero-only behaviour stays the shipped default.
-    const isWatermarkPersistOn = () => (typeof localStorage !== 'undefined' && localStorage.getItem(WATERMARK_PERSIST_KEY)) === '1'
+    const isWatermarkPersistOn = () => prefsGet(WATERMARK_PERSIST_KEY) === '1'
+    /* Hash-free selectors only. DSH 0.1.2-rc.1 rebuilt its CSS modules and every
+       hex hash changed (0/33 of the old pinned hashes survive), so anything of the
+       form [class*='pXSMma_root'] dies silently on upgrade. The stable hooks are
+       the semantic SUFFIX of the module class plus structural attributes:
+         data-phase is rendered ONLY on ConversationRoot (settling|hero|active) and
+         a status dot, and only ConversationRoot's class ends in '_root', so
+         [class$='_root'][data-phase=…] names the conversation column exactly. */
     const isHeroVisible = () => {
       if (typeof document === 'undefined') return false
-      const hero = document.querySelector('[class*="pXSMma_root"]')
+      const hero = document.querySelector('[class$="_root"][data-phase="hero"]')
       if (!hero) return false
       const r = hero.getBoundingClientRect()
       return r.width > 0 && r.height > 0
@@ -129,7 +1304,7 @@ function apply(ctx) {
     /** The visible conversation column — the persist-mode anchor and mount parent. */
     const findConversationRoot = () => {
       if (typeof document === 'undefined') return null
-      const all = document.querySelectorAll('[class*="wSkVaW_root"]')
+      const all = document.querySelectorAll('[class$="_root"][data-phase]')
       for (const el of all) {
         const r = el.getBoundingClientRect()
         if (r.width > 0 && r.height > 0) return el
@@ -138,7 +1313,7 @@ function apply(ctx) {
     }
     const findVisibleHeadline = () => {
       if (typeof document === 'undefined') return null
-      const all = document.querySelectorAll('[class*="pXSMma_headline"]')
+      const all = document.querySelectorAll('[class$="_headlineText"]')
       for (const h of all) {
         const r = h.getBoundingClientRect()
         if (r.width > 0 && r.height > 0) return h
@@ -209,7 +1384,12 @@ function apply(ctx) {
       s.color = 'var(--dsw-alias-label-primary)'
       s.textTransform = 'uppercase'
       s.userSelect = 'none'
-      s.fontFamily = 'var(--dsw-font-family)'
+      /* The theme's own face, via its own variable. It used to read
+         --dsw-font-family directly, which now points at the APP's stack (the
+         theme no longer overrides that token) — so reading it here would silently
+         un-style the wordmark. --edge-font is body-scoped and falls back to the
+         same stack, so this element is themed with or without the token. */
+      s.fontFamily = 'var(--edge-font)'
       /* Strength comes from a CSS variable, never a literal number, so the two
          colour schemes can carry DIFFERENT alphas (defined in the stylesheet) and
          a scheme flip simply re-resolves the variable — no observer, no repaint
@@ -225,9 +1405,9 @@ function apply(ctx) {
         s.height = '110px'
         /* z-index 0, NOT 1 — this is the fix for the wordmark painting on top of
            the app's own popovers, and the cause was a z-index TIE:
-             .wSkVaW_composerHero is position:relative + z-index:1, so it IS a
-             stacking context and the model-select menu's z-index:20 is trapped
-             inside it; that 20 never competes at body level.
+             the hero composer wrapper ('*_composerHero') is position:relative +
+             z-index:1, so it IS a stacking context and the model-select menu's
+             z-index:20 is trapped inside it; that 20 never competes at body level.
            The mark used to be z-index:1 too — the same level as composerHero in
            the root stacking context — and ties are broken by DOM order. Appended
            to <body> last, the mark won every tie and painted over the whole
@@ -258,6 +1438,21 @@ function apply(ctx) {
       }
     }
     const syncWatermarkVisibility = () => {
+      /* Streaming fast path. A mounted persist-mode mark is still correctly
+         placed while (a) the switches that could turn it off are unchanged,
+         (b) no hero root exists in the document and (c) its host is still
+         attached — all three decidable WITHOUT a single getBoundingClientRect.
+         The observer fires on every body mutation batch, so during token
+         streaming this used to run the full mountPointFor() below (several
+         querySelector(All) + rect reads = one forced layout) per frame. Any
+         check failing here falls through to the full decision, so every real
+         transition — theme off, hero appearing, host detached, persist flipped
+         off — is still caught on the same batch. */
+      if (watermarkEl !== null && watermarkHost !== null && watermarkHost.isConnected
+        && typeof document !== 'undefined'
+        && watermarkEl.getAttribute('data-endfield-watermark') === 'persist'
+        && isEnabled() && isWatermarkOn() && isWatermarkPersistOn()
+        && document.querySelector('[class$="_root"][data-phase="hero"]') === null) return
       const on = isEnabled() && isWatermarkOn()
       const target = on ? mountPointFor() : null
       // Off the hero page the mark only survives when the persist switch is on.
@@ -313,6 +1508,229 @@ function apply(ctx) {
       }
     }
     const onWatermarkResize = () => { if (watermarkEl) positionWatermark() }
+    const BG_IMAGE_ON_KEY = 'dsh-theme-endfield-bg-image-on'
+    const BG_IMAGE_URL_KEY = 'dsh-theme-endfield-bg-image-url'
+    const BG_IMAGE_MASK_KEY = 'dsh-theme-endfield-bg-image-mask'
+    const BG_IMAGE_FIT_KEY = 'dsh-theme-endfield-bg-image-fit'
+    const BG_IMAGE_MASK_DEFAULT = 55
+    /* Stable body class while the global full-page image is active. This is what
+       owns the background transparency (especially the sidebar) instead of
+       relying only on transient DOM/:has() state, so the nav does not flicker
+       or only reveal the image on hover. */
+    const BG_ACTIVE_CLASS = 'theme-endfield-bg-on'
+    const BG_IMAGE_MASK_MIN = 0
+    const BG_IMAGE_MASK_MAX = 90
+    const BG_IMAGE_FIT_OPTIONS = ['cover', 'contain']
+    // Default OFF (=== '1'): a full-bleed image layer is opt-in decoration.
+    const isBgImageOn = () => prefsGet(BG_IMAGE_ON_KEY) === '1'
+    const readBgImageUrl = () => {
+      const raw = prefsGet(BG_IMAGE_URL_KEY)
+      return typeof raw === 'string' ? raw.trim() : ''
+    }
+    const readBgImageMask = () => {
+      const raw = prefsGet(BG_IMAGE_MASK_KEY)
+      if (raw === '') return BG_IMAGE_MASK_DEFAULT
+      const value = Number(raw)
+      if (!Number.isFinite(value)) return BG_IMAGE_MASK_DEFAULT
+      return Math.min(BG_IMAGE_MASK_MAX, Math.max(BG_IMAGE_MASK_MIN, Math.round(value)))
+    }
+    const readBgImageFit = () => {
+      const raw = prefsGet(BG_IMAGE_FIT_KEY)
+      return BG_IMAGE_FIT_OPTIONS.indexOf(raw) !== -1 ? raw : 'cover'
+    }
+    const syncBgImageActiveClass = () => {
+      if (typeof document === 'undefined' || document.body === null) return
+      const on = isEnabled() && isBgImageOn() && readBgImageUrl() !== ''
+      if (on) document.body.classList.add(BG_ACTIVE_CLASS)
+      else document.body.classList.remove(BG_ACTIVE_CLASS)
+      /* Also set the transparency inline on the concrete layout containers.
+         This keeps the sidebar and other columns transparent even if a hover /
+         quietBars / class-toggling rule would otherwise re-opaque them. */
+      const transparentSelectors = [
+        '[class$="_sidebarCol"]',
+        '[class$="_sidebarCol"] [class$="_root"]',
+        '[class$="_centerCol"]',
+        '[class$="_rightbarCol"]',
+        '[class$="_detailsCol"]',
+        '[class$="_detailsCol"] [class$="_root"]',
+        '[data-phase]',
+      ]
+      for (const selector of transparentSelectors) {
+        document.querySelectorAll(selector).forEach((el) => {
+          if (on) el.style.backgroundColor = 'transparent'
+          else el.style.backgroundColor = ''
+        })
+      }
+    }
+
+    /* ---------- navigation overlay background image (independent layer) ------
+       An optional second image layer that covers only the left navigation /
+       sidebar column (sidebarCol). When disabled it is not mounted at all, so the
+       global full-page image shows through the (already transparent) sidebar.
+       When enabled it paints above the global image inside the sidebar and has
+       its own opacity + scrim controls so the "New Session / Settings" labels
+       remain readable. */
+    const NAV_BG_IMAGE_ON_KEY = 'dsh-theme-endfield-nav-bg-image-on'
+    const NAV_BG_IMAGE_URL_KEY = 'dsh-theme-endfield-nav-bg-image-url'
+    const NAV_BG_IMAGE_OPACITY_KEY = 'dsh-theme-endfield-nav-bg-image-opacity'
+    const NAV_BG_IMAGE_MASK_KEY = 'dsh-theme-endfield-nav-bg-image-mask'
+    const NAV_BG_IMAGE_FIT_KEY = 'dsh-theme-endfield-nav-bg-image-fit'
+    const NAV_BG_IMAGE_OPACITY_DEFAULT = 100
+    const NAV_BG_IMAGE_OPACITY_MIN = 0
+    const NAV_BG_IMAGE_OPACITY_MAX = 100
+    const NAV_BG_IMAGE_MASK_DEFAULT = 65
+    const NAV_BG_IMAGE_MASK_MIN = 0
+    const NAV_BG_IMAGE_MASK_MAX = 90
+    const NAV_BG_IMAGE_FIT_OPTIONS = ['cover', 'contain']
+    const isNavBgImageOn = () => prefsGet(NAV_BG_IMAGE_ON_KEY) === '1'
+    const readNavBgImageUrl = () => {
+      const raw = prefsGet(NAV_BG_IMAGE_URL_KEY)
+      return typeof raw === 'string' ? raw.trim() : ''
+    }
+    const readNavBgImageOpacity = () => {
+      const raw = prefsGet(NAV_BG_IMAGE_OPACITY_KEY)
+      if (raw === '') return NAV_BG_IMAGE_OPACITY_DEFAULT
+      const value = Number(raw)
+      if (!Number.isFinite(value)) return NAV_BG_IMAGE_OPACITY_DEFAULT
+      return Math.min(NAV_BG_IMAGE_OPACITY_MAX, Math.max(NAV_BG_IMAGE_OPACITY_MIN, Math.round(value)))
+    }
+    const readNavBgImageMask = () => {
+      const raw = prefsGet(NAV_BG_IMAGE_MASK_KEY)
+      if (raw === '') return NAV_BG_IMAGE_MASK_DEFAULT
+      const value = Number(raw)
+      if (!Number.isFinite(value)) return NAV_BG_IMAGE_MASK_DEFAULT
+      return Math.min(NAV_BG_IMAGE_MASK_MAX, Math.max(NAV_BG_IMAGE_MASK_MIN, Math.round(value)))
+    }
+    const readNavBgImageFit = () => {
+      const raw = prefsGet(NAV_BG_IMAGE_FIT_KEY)
+      return NAV_BG_IMAGE_FIT_OPTIONS.indexOf(raw) !== -1 ? raw : 'cover'
+    }
+
+    let bgImageWrap = null
+    let bgImageHost = null
+
+    const bgImageTeardown = () => {
+      if (bgImageWrap !== null && bgImageWrap.parentNode) bgImageWrap.parentNode.removeChild(bgImageWrap)
+      bgImageWrap = null
+      bgImageHost = null
+    }
+    /* CSSOM is used for the dynamic parts (image URL, fit, mask) so the stylesheet
+       only has to define the geometry and the mount-time guards. The wrapper carries
+       no text, so the same translation-proofing as the wordmark is unnecessary; it
+       is aria-hidden because it is decorative. */
+    const applyBgImageStyles = () => {
+      if (bgImageWrap === null) return
+      const url = readBgImageUrl()
+      const mask = readBgImageMask()
+      const fit = readBgImageFit()
+      /* Only touch the DOM when a value actually changed: this runs on every page
+         mutation through the observer, so the common path must be a string compare,
+         not a layout/style write. */
+      const nextImage = url !== '' ? `url("${url}")` : 'none'
+      if (bgImageWrap.style.backgroundImage !== nextImage) bgImageWrap.style.backgroundImage = nextImage
+      const nextMask = mask + '%'
+      if (bgImageWrap.style.getPropertyValue('--edge-bg-mask') !== nextMask) bgImageWrap.style.setProperty('--edge-bg-mask', nextMask)
+      if (bgImageWrap.style.getPropertyValue('--edge-bg-fit') !== fit) bgImageWrap.style.setProperty('--edge-bg-fit', fit)
+    }
+
+    /** Build/refresh/remove the global (whole-page) background layer. */
+    const syncBgImage = () => {
+      syncBgImageActiveClass()
+      const on = isEnabled() && isBgImageOn() && readBgImageUrl() !== ''
+      if (!on) {
+        if (bgImageWrap !== null) bgImageTeardown()
+        return
+      }
+      const attached = bgImageWrap !== null && bgImageHost !== null
+        && bgImageWrap.parentNode === bgImageHost && bgImageHost.isConnected
+      if (attached) {
+        applyBgImageStyles()
+        return
+      }
+      const host = findAppFrame()
+      if (host === null) {
+        // Frame not rendered yet; a later mutation will retry through the hooks.
+        if (bgImageWrap !== null) bgImageTeardown()
+        return
+      }
+      if (bgImageWrap !== null && bgImageHost !== host) bgImageTeardown()
+      if (bgImageWrap === null) {
+        const wrap = document.createElement('div')
+        wrap.setAttribute('data-endfield-bg-image', '')
+        wrap.setAttribute('aria-hidden', 'true')
+        /* First child keeps the image at the bottom of the frame's paint order;
+           if the contour sheet is also mounted, the image sits beneath the
+           contour lines rather than covering them. */
+        if (host.firstChild) host.insertBefore(wrap, host.firstChild)
+        else host.appendChild(wrap)
+        bgImageWrap = wrap
+        bgImageHost = host
+      }
+      applyBgImageStyles()
+    }
+
+
+    let navBgImageWrap = null
+    let navBgImageHost = null
+
+    const findNavBgImageHost = () => {
+      if (typeof document === 'undefined') return null
+      return document.querySelector('[class$="_sidebarCol"]') || document.querySelector('[class*="_sidebarCol"]')
+    }
+
+    const navBgImageTeardown = () => {
+      if (navBgImageWrap !== null && navBgImageWrap.parentNode) navBgImageWrap.parentNode.removeChild(navBgImageWrap)
+      navBgImageWrap = null
+      navBgImageHost = null
+    }
+
+    const applyNavBgImageStyles = () => {
+      if (navBgImageWrap === null) return
+      const url = readNavBgImageUrl()
+      const opacity = readNavBgImageOpacity()
+      const mask = readNavBgImageMask()
+      const fit = readNavBgImageFit()
+      const nextImage = url !== '' ? `url("${url}")` : 'none'
+      if (navBgImageWrap.style.backgroundImage !== nextImage) navBgImageWrap.style.backgroundImage = nextImage
+      const nextOpacity = String(opacity / 100)
+      if (navBgImageWrap.style.opacity !== nextOpacity) navBgImageWrap.style.opacity = nextOpacity
+      const nextMask = mask + '%'
+      if (navBgImageWrap.style.getPropertyValue('--edge-nav-mask') !== nextMask) navBgImageWrap.style.setProperty('--edge-nav-mask', nextMask)
+      if (navBgImageWrap.style.getPropertyValue('--edge-nav-fit') !== fit) navBgImageWrap.style.setProperty('--edge-nav-fit', fit)
+    }
+
+    /** Build/refresh/remove the navigation overlay background layer. */
+    const syncNavBgImage = () => {
+      const on = isEnabled() && isNavBgImageOn() && readNavBgImageUrl() !== ''
+      if (!on) {
+        if (navBgImageWrap !== null) navBgImageTeardown()
+        return
+      }
+      const attached = navBgImageWrap !== null && navBgImageHost !== null
+        && navBgImageWrap.parentNode === navBgImageHost && navBgImageHost.isConnected
+      if (attached) {
+        applyNavBgImageStyles()
+        return
+      }
+      const host = findNavBgImageHost()
+      if (host === null) {
+        if (navBgImageWrap !== null) navBgImageTeardown()
+        return
+      }
+      if (navBgImageWrap !== null && navBgImageHost !== host) navBgImageTeardown()
+      if (navBgImageWrap === null) {
+        const wrap = document.createElement('div')
+        wrap.setAttribute('data-endfield-nav-bg-image', '')
+        wrap.setAttribute('aria-hidden', 'true')
+        if (host.firstChild) host.insertBefore(wrap, host.firstChild)
+        else host.appendChild(wrap)
+        navBgImageWrap = wrap
+        navBgImageHost = host
+      }
+      applyNavBgImageStyles()
+    }
+
+
     let contourScrollHook = () => {}
     let contourScrollEndHook = () => {}
     const onContourScrollEvent = () => { contourScrollHook() }
@@ -327,9 +1745,19 @@ function apply(ctx) {
        mutable binding rather than referenced directly, because a `const` declared
        later is in its temporal dead zone during apply() — and `typeof` does NOT
        protect against a TDZ ReferenceError the way it does for an undeclared name. */
-    let contourSyncHook = () => {}
+    /* LOCAL PATCH: background-image layers ride the same MutationObserver as the
+       contour sheet — the app frame is created during boot and replaced on some
+       route changes, so both layers must be able to (re)attach later. */
     let bgImageSyncHook = () => {}
     let navBgImageSyncHook = () => {}
+    let contourSyncHook = () => {}
+
+    /* The two background-image layers install their reconcilers here, AFTER the
+       hook variables exist — assigning inside the layer bodies ran before these
+       `let`s and threw a TDZ ReferenceError at apply() (caught by
+       test/settings-namespace.test.js). */
+    bgImageSyncHook = syncBgImage
+    navBgImageSyncHook = syncNavBgImage
     /* The bundle can be evaluated before <body> exists (the same window runLoader
        defends with a DOMContentLoaded deferral). The old code created the observer
        only when body was already there and never retried, so an early-boot apply
@@ -387,10 +1815,11 @@ function apply(ctx) {
        WHERE IT IS MOUNTED, and why this specific parent. Measured from the app's
        own CSS, three elements paint an OPAQUE --dsw-alias-bg-base over any
        body-level layer: the app frame ([class$='_frame']), the conversation column
-       ([class*='wSkVaW_root']) and the details column. A fixed <body> child would
-       therefore be invisible on every real page. The layer is instead a child of
-       the app FRAME, with those descendant fills neutralised to transparent while
-       the layer is mounted (the :has() guard makes all of it vanish when off).
+       ([class$='_root'] inside the centre column) and the details column. A fixed
+       <body> child would therefore be invisible on every real page. The layer is
+       instead a child of the app FRAME, with those descendant fills neutralised to
+       transparent while the layer is mounted (the :has() guard makes all of it
+       vanish when off).
        The frame is already position:relative and creates NO stacking context, so
        an inset:0 z-index:0 child sits above the frame's own background and below
        every positioned descendant. The sidebar keeps its own colour because in
@@ -413,26 +1842,80 @@ function apply(ctx) {
     const CONTOUR_FPS_KEY = 'dsh-theme-endfield-contour-fps'
     const CONTOUR_SPEED_KEY = 'dsh-theme-endfield-contour-speed'
     const CONTOUR_SCROLL_PAUSE_KEY = 'dsh-theme-endfield-contour-scroll-pause'
+    const CONTOUR_TRAIL_KEY = 'dsh-theme-endfield-contour-trail'
     const CONTOUR_FPS_OPTIONS = [24, 60, 120]
     const CONTOUR_SPEED_OPTIONS = [1, 2, 4]
     const CONTOUR_PHASE_STEP = 1 / 150
     // Default OFF (=== '1'): a background pattern must be opt-in.
-    const isContourOn = () => (typeof localStorage !== 'undefined' && localStorage.getItem(CONTOUR_KEY)) === '1'
+    const isContourOn = () => prefsGet(CONTOUR_KEY) === '1'
     // Defaults ON, so enabling the layer shows the effect at once; it is
     // meaningless while the layer itself is off.
-    const isContourAnimOn = () => (typeof localStorage !== 'undefined' && localStorage.getItem(CONTOUR_ANIM_KEY)) !== '0'
+    const isContourAnimOn = () => prefsGet(CONTOUR_ANIM_KEY) !== '0'
     const readContourFps = () => {
-      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(CONTOUR_FPS_KEY) : null
-      const fps = Number(raw)
+      const fps = Number(prefsGet(CONTOUR_FPS_KEY))
       return CONTOUR_FPS_OPTIONS.includes(fps) ? fps : 24
     }
     const readContourSpeed = () => {
-      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(CONTOUR_SPEED_KEY) : null
-      const speed = Number(raw)
+      const speed = Number(prefsGet(CONTOUR_SPEED_KEY))
       return CONTOUR_SPEED_OPTIONS.includes(speed) ? speed : 2
     }
-    const isContourScrollPauseOn = () => (typeof localStorage !== 'undefined'
-      && localStorage.getItem(CONTOUR_SCROLL_PAUSE_KEY)) !== '0'
+    const isContourScrollPauseOn = () => prefsGet(CONTOUR_SCROLL_PAUSE_KEY) !== '0'
+    const isContourTrailOn = () => prefsGet(CONTOUR_TRAIL_KEY) === '1'
+
+    /* Optional pointer deformation, adapted from the Endfield Glass plugin.
+       Only the latest mouse position is consumed by each existing contour frame:
+       no second rAF, no pointer-handler layout reads, no persistent coordinates.
+       Head and tail quotas are fixed before age decay, so expiring an old point
+       cannot brighten surviving points. The history is bounded at 24 samples. */
+    const createContourTrail = () => {
+      const points = []
+      const prune = (now) => {
+        while (points.length && now - points[0].t > 2700) points.shift()
+      }
+      return {
+        clear() { points.length = 0 },
+        view(now) { prune(now); return points },
+        push(x, y, time, now) {
+          if (![x, y, now].every(Number.isFinite) || now < 0) return false
+          prune(now)
+          // Some browsers use epoch timestamps. Use the reception clock for
+          // those, but keep a trustworthy event's real age after a busy frame.
+          const t = Number.isFinite(time) && time >= 0 && time < 1e12 && time <= now + 4
+            ? Math.min(time, now) : now
+          if (now - t > 2700) return false
+          const last = points[points.length - 1]
+          if (last && (t - last.t < 8 || (x - last.x) ** 2 + (y - last.y) ** 2 < 4)) return false
+          if (points.length === 24) points.shift()
+          points.push({ x, y, t })
+          return true
+        },
+      }
+    }
+    const contourOverlayTrail = (field, points, now) => {
+      const { cols, rows, step, F } = field
+      // A smooth Gaussian is added AFTER the ambient smoothing/EMA. It never
+      // enters previous, so it responds immediately and leaves no temporal ghost.
+      // 28 CSS px approximates the original 26 px kernel after spatial smoothing.
+      const sigma = 28, radius = sigma * Math.sqrt(2 * 6.76)
+      const inv = 1 / (2 * sigma * sigma)
+      for (let rank = 0; rank < points.length; rank++) {
+        const point = points[points.length - 1 - rank]
+        const age = now - point.t
+        if (age < 0 || age > 2700) continue
+        const quota = rank === 0 ? .9 : .6 * .2 * Math.pow(.8, rank - 1)
+        const amplitude = quota * Math.exp(-age / 900)
+        const i0 = Math.max(0, Math.floor((point.x - radius) / step))
+        const i1 = Math.min(cols - 1, Math.ceil((point.x + radius) / step))
+        const j0 = Math.max(0, Math.floor((point.y - radius) / step))
+        const j1 = Math.min(rows - 1, Math.ceil((point.y + radius) / step))
+        for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+          const q = ((i * step - point.x) ** 2 + (j * step - point.y) ** 2) * inv
+          if (q >= 6.76) continue
+          const t = Math.max(0, (q - 4.8) / (6.76 - 4.8))
+          F[j * cols + i] += amplitude * Math.exp(-q) * (1 - t * t * (3 - 2 * t))
+        }
+      }
+    }
 
     /* Deterministic PRNG (mulberry32), used with a PER-PAGE-LOAD seed.
        Determinism is still required WITHIN one load: contourBuild() is re-run on
@@ -484,7 +1967,13 @@ function apply(ctx) {
     let contourGeom = null      // { w, h, cols, rows, step } of the current field
     let contourField = null     // typed-array state, rebuilt only on resize
     let contourLastField = -1   // timestamp of the last field extraction
+    let contourLastCost = 0     // measured cost of the last refresh (ms); ~0 while the worker paints
     let contourPhase = 0
+    const contourTrail = createContourTrail()
+    let contourTrailPointer = null
+    let contourTrailListening = false
+    let contourTrailPainted = false
+    let contourMotionQuery = null
     /* Last applied animation state. Declared HERE, above every function that touches
        it, because contourTeardown() assigns it and is itself reachable from
        unmount() — a `let` declared further down would still be in its temporal dead
@@ -494,6 +1983,52 @@ function apply(ctx) {
     const CONTOUR_STEP = 6      // balanced sampling/detail point for 1px contour strokes
     const CONTOUR_LEVELS = 20
     const CONTOUR_SPAN = 1.45   // levels span [-SPAN, +SPAN]
+    /* GRID-CELL CAP. Every pass of the sheet — evaluate, extract, and the draw
+       list — is linear in cols*rows, and cols*rows grows with the SQUARE of the
+       viewport. Past this cap the sampling step grows instead, which keeps the cost
+       of one sheet roughly constant in frame AREA. The cap is set so every ordinary
+       window keeps the shipped 6px grid byte-for-byte (1440x900 is 36k cells,
+       1920x1080 is 58k); only genuinely large canvases coarsen, and the spline still
+       rounds the coarser polyline at a 1px stroke. It also keeps a large HiDPI
+       canvas inside the worker's own backing-store limit, so the sheet stays on the
+       off-main-thread path instead of falling back to the synchronous painter. */
+    const CONTOUR_MAX_CELLS = 60000
+    /* Bump radius floor, in grid samples. The radius was `(0.05..0.14) * min(w, h)`,
+       which ties the terrain's feature size to the frame's SHORTER side: in a short
+       (or very narrow) frame the gaussians shrink below the sampling step and the
+       field becomes ALIASED — adjacent samples jump across many levels, so marching
+       squares emits tightly nested rings with hairpin cusps that read as tangled,
+       piled-up lines instead of terrain. Reproduced at 1440x130 (at 1440x60 it
+       degenerates into bracket-shaped debris). Four samples per sigma is where the
+       crossings stop racing each other; at any ordinary window the relative term is
+       already far above this floor, so the shipped look is unchanged. */
+    const CONTOUR_MIN_BUMPSAMPLES = 4
+    /* Chaikin pass budget by extracted-vertex count. Each pass DOUBLES the point
+       count, so three passes hand the painter 8x the extracted vertices (measured
+       37,865 bezierCurveTo per sheet at 1440x900 from ~4.7k extracted). A sheet at or
+       under CONTOUR_SMOOTH_FULL keeps the shipped three passes, so ordinary windows
+       render exactly as before; a bigger sheet drops to two and then one, where the
+       clamped cubic below is still doing the rounding and a 1px stroke cannot show
+       the difference. */
+    const CONTOUR_SMOOTH_FULL = 8000
+    const CONTOUR_SMOOTH_LIMIT = 20000
+    /* Animation duty-cycle ceiling for the SYNCHRONOUS painter. When the worker is
+       driving the sheet, one refresh costs well under a millisecond and this clamp
+       never binds; when the canvas is large enough that the worker refuses it (or the
+       worker is unavailable) the draw runs on the main thread, and a sheet that costs
+       more than its nominal frame must give the thread back rather than queue another
+       update. The phase still advances by exactly one nominal step per UPDATE — never
+       by the elapsed wall-clock gap, which is what made the morph twitch — so a
+       loaded machine sees the same motion played back at a lower rate. */
+    const CONTOUR_DUTY = 0.5
+    /** Sampling step for a viewport: the shipped 6px grid, coarsened only when the
+     *  cell count would otherwise blow past CONTOUR_MAX_CELLS. */
+    const contourStepFor = (w, h) => {
+      let step = CONTOUR_STEP
+      const cells = (s) => (Math.ceil(w / s) + 1) * (Math.ceil(h / s) + 1)
+      while (step < 40 && cells(step) > CONTOUR_MAX_CELLS) step += 1
+      return step
+    }
     const contourFieldFps = () => readContourFps()
     /* Speck rejection. Marching squares legitimately produces two kinds of debris
        that read as "mysterious little dots" rather than terrain:
@@ -517,7 +2052,7 @@ function apply(ctx) {
        removal, not thinning. */
     const CONTOUR_MIN_LEN = 40      // px of on-canvas stroke; below this it is a speck
     const CONTOUR_MIN_RING_BOX = 21 // px; one median line spacing
-    /* keep() judges the RAW stitched polyline, but contourDrawLines() redraws it as
+    /* keep() judges the RAW stitched polyline, but contourRefresh(false) redraws it as
        a smoothed curve (Chaikin corner-cutting followed by a clamped cubic spline),
        which does not follow the raw polyline exactly: corner-cutting drops the
        sharp extremes, so measured against the real output a path can land slightly
@@ -536,6 +2071,33 @@ function apply(ctx) {
        blank. 3 is the smallest value that survived the sweep below without pushing
        the re-roll loop to its attempt cap. */
     const CONTOUR_MIN_CROSSINGS = 3
+    /* ...but a crossing COUNT is not ink. Three bands can all graze one corner of a
+       cell and leave it nearly empty, so the count alone does not certify the thing
+       the coverage test asserts (rendered ink per cell). That gap is what made
+       contour-specks flaky: on a CI rasterizer the thinnest accepted layouts measured
+       0.47% against the 0.6% line while the validator reported them sound.
+
+       So each region is ALSO scored by a cheap ink proxy: for every field quad inside
+       it, count the drawn levels that fall inside that quad's clamped corner range.
+       One such incidence means the isoline passes through that quad, i.e. roughly
+       `step` px of stroke, so summing them tracks the region's line length without
+       running marching squares or an extraction inside the validator.
+
+       Calibrated on 400 random layouts at 1406x756 and 1440x757 against the REAL
+       extracted stroke length per 8x5 region (striated at 8 substeps per segment):
+         ink proxy  47-52  ->  182-201px of stroke in the thinnest region
+         ink proxy      80  ->  ~310px
+         ink proxy      92  ->  ~437px   (median layout)
+       The floor below therefore lifts the guaranteed thinnest region from ~182px to
+       ~310px, which is the margin the pixel metric needed. Cost over 300 seeds: mean
+       attempts 3.97 -> 8.06, p95 24, and 2 of 300 loads reach the 32-attempt cap
+       (0.7%, against 0 at the old floor) - those ship the best of the 32, whose
+       thinnest region sits just under the floor, so even the fallback improves on
+       today's worst case. The alternatives were measured, not guessed: 4 CROSSINGS
+       exhausts the cap on 39% of loads and ink 100 on 11%, while a 1px sample stride
+       with an alpha>0 threshold moves the same cell by only 1.25x - i.e. the thin
+       cells are genuinely thin, not a measurement artifact. */
+    const CONTOUR_MIN_INK = 80
 
     const isDarkScheme = () => typeof document !== 'undefined'
       && document.body
@@ -552,6 +2114,7 @@ function apply(ctx) {
       && window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const contourWantsAnim = () => isContourAnimOn() && !prefersReducedMotion()
       && !contourLoaderActive && !contourScrollPaused
+      && (typeof document === 'undefined' || !document.hidden)
     let contourLoaderActive = false
     let contourScrollPaused = false
     let contourScrollTimer = null
@@ -561,6 +2124,7 @@ function apply(ctx) {
       if (!isEnabled() || contourWrap === null || !isContourScrollPauseOn() || !isContourAnimOn()) return
       if (!contourScrollPaused) {
         contourScrollPaused = true
+        if (contourWorker) contourWorker.pending = null
         contourSwitchSig = ''
         contourStopLoop()
       }
@@ -584,8 +2148,7 @@ function apply(ctx) {
         if (contourResizePending && contourHost !== null) {
           contourResizePending = false
           if (contourSizeTo(contourHost)) {
-            contourExtract(contourPhase)
-            contourDrawLines()
+            contourRefresh(true)
           }
         }
         contourApplySwitches()
@@ -639,25 +2202,29 @@ function apply(ctx) {
          an acceptable layout the common case: mean 2.5 candidates, max 6, never at
          the cap. Validation is what makes it a guarantee. */
       const attempts = 32
+      const step = contourStepFor(w, h)
       let best = null
       for (let attempt = 0; attempt < attempts; attempt++) {
-        const cand = contourBuildCandidate(w, h, attempt)
+        const cand = contourBuildCandidate(w, h, attempt, step)
         const score = contourCoverageScore(cand, w, h)
-        if (best === null || score.worst > best.score.worst) best = { cand, score }
+        /* Prefer more crossing bands, then more ink in the thinnest region. The
+           tiebreak only matters if every attempt fails validation and the best of the
+           32 ships — measured at 0 of 200 seeds with the floor in place. */
+        if (best === null || score.worst > best.score.worst
+          || (score.worst === best.score.worst && score.ink > best.score.ink)) best = { cand, score }
         // Comfortably above the 0.6%-ink failure line, in field terms: every cell
         // must contain a spread of values wider than one level gap, so at least one
         // level is guaranteed to cross it.
         if (score.ok) break
       }
       contourField = best.cand.field
-      contourGeom = { w, h, cols: best.cand.cols, rows: best.cand.rows, step: CONTOUR_STEP }
+      contourGeom = { w, h, cols: best.cand.cols, rows: best.cand.rows, step }
     }
 
     /* One candidate landscape. `salt` varies the draw per attempt while staying
        deterministic for a given page load, so a resize reproduces the same accepted
        layout instead of reshuffling the terrain under the user. */
-    const contourBuildCandidate = (w, h, salt) => {
-      const step = CONTOUR_STEP
+    const contourBuildCandidate = (w, h, salt, step) => {
       const cols = Math.ceil(w / step) + 1
       const rows = Math.ceil(h / step) + 1
       const K = 22                       // bump count: tuned to the reference's island density
@@ -696,7 +2263,10 @@ function apply(ctx) {
         by[k] = -0.1 * h + ((cj + rnd()) / gy) * spanY
         // Mixed sign gives peaks AND basins; equal signs would read as one blob.
         ba[k] = (rnd() < 0.5 ? -1 : 1) * (0.6 + rnd() * 0.9)
-        bs[k] = (0.05 + rnd() * 0.09) * m
+        /* Radius: relative to the frame for the shipped look, but never below
+           CONTOUR_MIN_BUMPSAMPLES grid samples or the field aliases — see the note on
+           that constant. This floor is the fix for the tangled/piled-up lines. */
+        bs[k] = Math.max(step * CONTOUR_MIN_BUMPSAMPLES, (0.05 + rnd() * 0.09) * m)
         dx[k] = rnd() * 2 - 1
         dy[k] = rnd() * 2 - 1
       }
@@ -722,6 +2292,12 @@ function apply(ctx) {
         previous: new Float32Array(cols * rows),
         hasPrevious: false,
         smooth: new Float32Array(cols * rows),
+        // Exact row-block bounds include both rows and the shared right vertex.
+        // They reject empty regions without changing retained cells or path order.
+        blockCols: Math.ceil((cols - 1) / 16),
+        blockMin: new Float32Array(Math.ceil((cols - 1) / 16) * (rows - 1)),
+        blockMax: new Float32Array(Math.ceil((cols - 1) / 16) * (rows - 1)),
+        boundsReady: false,
         ex: new Float32Array(eCount),
         ey: new Float32Array(eCount),
         es: new Int32Array(eCount).fill(-1),
@@ -759,17 +2335,31 @@ function apply(ctx) {
       const levelStep = (span * 2) / CONTOUR_LEVELS
       let worst = Infinity
       let ok = true
+      let ink = Infinity
       for (let gy = 0; gy < GY; gy++) {
         for (let gx = 0; gx < GX; gx++) {
           const i0 = Math.floor(gx * (cols - 1) / GX), i1 = Math.ceil((gx + 1) * (cols - 1) / GX)
           const j0 = Math.floor(gy * (rows - 1) / GY), j1 = Math.ceil((gy + 1) * (rows - 1) / GY)
           let mn = Infinity, mx = -Infinity
+          /* The ink proxy is accumulated over the QUADS of this region, in the same
+             walk that takes its min/max — see CONTOUR_MIN_INK. */
+          let regionInk = 0
           for (let j = j0; j <= j1 && j < rows; j++) {
             const row = j * cols
             for (let i = i0; i <= i1 && i < cols; i++) {
               const v = F[row + i]
               if (v < mn) mn = v
               if (v > mx) mx = v
+              if (j < j1 && j < rows - 1 && i < i1 && i < cols - 1) {
+                const a = v, b = F[row + i + 1]
+                const c = F[row + cols + i], d = F[row + cols + i + 1]
+                let qmn = a < b ? a : b, qmx = a > b ? a : b
+                if (c < qmn) qmn = c; if (c > qmx) qmx = c
+                if (d < qmn) qmn = d; if (d > qmx) qmx = d
+                if (qmn < -span) qmn = -span
+                if (qmx > span) qmx = span
+                if (qmx > qmn) regionInk += Math.floor(qmx / levelStep) - Math.ceil(qmn / levelStep) + 1
+              }
             }
           }
           // Clamp to the drawn level range: values beyond +/-SPAN produce no lines.
@@ -779,9 +2369,11 @@ function apply(ctx) {
             : Math.floor(hi / levelStep) - Math.ceil(lo / levelStep) + 1
           if (crossings < worst) worst = crossings
           if (crossings < CONTOUR_MIN_CROSSINGS) ok = false
+          if (regionInk < ink) ink = regionInk
+          if (regionInk < CONTOUR_MIN_INK) ok = false
         }
       }
-      return { ok, worst }
+      return { ok, worst, ink }
     }
 
     /* Evaluate the field at `phase`. Bounded scatter: each bump adds itself only
@@ -789,6 +2381,7 @@ function apply(ctx) {
        over evaluating every bump at every grid point. */
     const contourEvaluate = (phase) => {
       const f = contourField
+      if (f !== null) f.boundsReady = false
       if (f === null) return
       const { cols, rows, step, K, bx, by, ba, bs, dx, dy, F, W2 } = f
       /* Seed the sheet with the base undulation instead of zero, so the gaps
@@ -914,6 +2507,13 @@ function apply(ctx) {
       for (let j = 0; j < rows - 1; j++) {
         const row = j * cols
         for (let i = 0; i < cols - 1; i++) {
+          if (f.boundsReady && i % 16 === 0) {
+            const block = j * f.blockCols + Math.floor(i / 16)
+            if (L <= f.blockMin[block] || L > f.blockMax[block]) {
+              i = Math.min(i + 16, cols - 1) - 1
+              continue
+            }
+          }
           const p0 = row + i
           const p1 = p0 + 1
           const p3 = p0 + cols
@@ -1130,9 +2730,32 @@ function apply(ctx) {
       }
     }
 
-    const contourExtract = (phase) => {
+    const contourExtract = (phase, trailPoints, trailNow) => {
       if (contourField === null) return
       contourEvaluate(phase)
+      if (trailPoints && trailPoints.length) contourOverlayTrail(contourField, trailPoints, trailNow)
+      const f = contourField
+      // One O(cells) range pass is shared by all 21 extraction levels. Scratch
+      // survives across frames; no resolution, smoothing or density is reduced.
+      for (let j = 0; j < f.rows - 1; j++) {
+        const row = j * f.cols
+        for (let block = 0; block < f.blockCols; block++) {
+          const begin = block * 16
+          const end = Math.min(begin + 16, f.cols - 1)
+          let min = Infinity, max = -Infinity
+          for (let i = begin; i <= end; i++) {
+            const a = f.F[row + i], b = f.F[row + f.cols + i]
+            if (a < min) min = a
+            if (a > max) max = a
+            if (b < min) min = b
+            if (b > max) max = b
+          }
+          const k = j * f.blockCols + block
+          f.blockMin[k] = min
+          f.blockMax[k] = max
+        }
+      }
+      f.boundsReady = true
       contourPaths = []
       const span = CONTOUR_SPAN
       const stepL = (span * 2) / CONTOUR_LEVELS
@@ -1206,37 +2829,44 @@ function apply(ctx) {
       /* Marching squares emits one vertex per grid-cell edge. Three Chaikin passes
          cut local corners before the clamped cubic B-spline rounds broad bends.
          This reduces angularity without changing the field or adding another
-         extraction pass. Open endpoints remain fixed; closed rings wrap cyclically. */
+         extraction pass. Open endpoints remain fixed; closed rings wrap cyclically.
+
+         PASS COUNT IS SIZE-ADAPTIVE: see CONTOUR_SMOOTH_FULL. Every ordinary window
+         keeps three passes; a bigger sheet drops to two and then one. */
       const smoothPath = (source) => {
         const count = source.length / 2
         if (count < 3) return source
-        let points = []
-        for (let k = 0; k < source.length; k += 2) points.push([source[k], source[k + 1]])
-        const closed = (points[0][0] - points[points.length - 1][0]) ** 2
-          + (points[0][1] - points[points.length - 1][1]) ** 2 < 4
-        if (closed) points.pop()
-        for (let pass = 0; pass < 3; pass++) {
-          const next = []
-          const limit = closed ? points.length : points.length - 1
-          if (!closed) next.push(points[0])
+        const closed = (source[0] - source[source.length - 2]) ** 2
+          + (source[1] - source[source.length - 1]) ** 2 < 4
+        /* Flat scratch throughout: the previous shape built one [x, y] array per
+           point PER PASS — ~14 small arrays per source vertex, ~65k per sheet at
+           1440x900 — which is pure GC inside the animation frame on both painters. */
+        let points = closed ? source.slice(0, source.length - 2) : source.slice()
+        const passes = count <= CONTOUR_SMOOTH_FULL ? 3 : (count <= CONTOUR_SMOOTH_LIMIT ? 2 : 1)
+        for (let pass = 0; pass < passes; pass++) {
+          const n = points.length / 2
+          const limit = closed ? n : n - 1
+          const next = new Array(n * 4)
+          let w2 = 0
+          if (!closed) { next[w2++] = points[0]; next[w2++] = points[1] }
           for (let k = 0; k < limit; k++) {
-            const a = points[k]
-            const b = points[(k + 1) % points.length]
-            next.push([
-              a[0] * 0.75 + b[0] * 0.25,
-              a[1] * 0.75 + b[1] * 0.25,
-            ], [
-              a[0] * 0.25 + b[0] * 0.75,
-              a[1] * 0.25 + b[1] * 0.75,
-            ])
+            const a = k * 2
+            const b = ((k + 1) % n) * 2
+            const ax = points[a], ay = points[a + 1]
+            const bx = points[b], by = points[b + 1]
+            next[w2++] = ax * 0.75 + bx * 0.25
+            next[w2++] = ay * 0.75 + by * 0.25
+            next[w2++] = ax * 0.25 + bx * 0.75
+            next[w2++] = ay * 0.25 + by * 0.75
           }
-          if (!closed) next.push(points[points.length - 1])
-          points = next
+          if (!closed) { next[w2++] = points[points.length - 2]; next[w2++] = points[points.length - 1] }
+          points = w2 === next.length ? next : next.slice(0, w2)
         }
-        const result = []
-        for (const point of points) result.push(point[0], point[1])
-        if (closed) result.push(result[0], result[1])
-        return result
+        if (!closed) return points
+        // Re-anchor the repeated start vertex so the ring stays exactly closed.
+        const out = points.slice()
+        out.push(out[0], out[1])
+        return out
       }
       /* Chaikin removes local grid noise. A constrained Catmull-Rom cubic then
          gives each join one shared tangent. The handle cap prevents overshoot at
@@ -1252,55 +2882,60 @@ function apply(ctx) {
         const closed = (source[0] - source[source.length - 2]) ** 2
           + (source[1] - source[source.length - 1]) ** 2 < 4
         const limit = closed ? count - 1 : count
-        const point = (index) => {
+        const at = (index) => {
           const k = closed
             ? (index + limit) % limit
             : Math.max(0, Math.min(limit - 1, index))
-          return [source[k * 2], source[k * 2 + 1]]
+          return k * 2
         }
-        const tangent = (index) => {
-          const current = point(index)
-          const previous = point(index - 1)
-          const next = point(index + 1)
+        /* Tangents from scalars, with squared lengths wherever the comparison allows
+           it. The previous shape allocated eight [x, y] arrays and ran up to six
+           Math.hypot per SEGMENT — tens of thousands of segments per frame, on both
+           the WebGL painter and the canvas fallback. Math.sqrt replaces hypot because
+           every argument here is a pixel delta, far from hypot's overflow range. */
+        const tangentAt = (index, out) => {
+          const i = at(index)
+          const p = at(index - 1)
+          const n = at(index + 1)
+          const cx = source[i], cy = source[i + 1]
+          const inX = cx - source[p], inY = cy - source[p + 1]
+          const outX = source[n] - cx, outY = source[n + 1] - cy
           let tx, ty, cap
-          const incomingX = current[0] - previous[0]
-          const incomingY = current[1] - previous[1]
-          const outgoingX = next[0] - current[0]
-          const outgoingY = next[1] - current[1]
           if (!closed && index === 0) {
-            tx = outgoingX * 0.4
-            ty = outgoingY * 0.4
-            cap = Math.hypot(outgoingX, outgoingY) * 0.55
+            tx = outX * 0.4
+            ty = outY * 0.4
+            cap = Math.sqrt(outX * outX + outY * outY) * 0.55
           } else if (!closed && index === limit - 1) {
-            tx = incomingX * 0.4
-            ty = incomingY * 0.4
-            cap = Math.hypot(incomingX, incomingY) * 0.55
+            tx = inX * 0.4
+            ty = inY * 0.4
+            cap = Math.sqrt(inX * inX + inY * inY) * 0.55
           } else {
-            tx = (next[0] - previous[0]) * 0.32
-            ty = (next[1] - previous[1]) * 0.32
-            cap = Math.min(
-              Math.hypot(incomingX, incomingY),
-              Math.hypot(outgoingX, outgoingY),
-            ) * 0.62
+            tx = (source[n] - source[p]) * 0.32
+            ty = (source[n + 1] - source[p + 1]) * 0.32
+            cap = Math.sqrt(Math.min(inX * inX + inY * inY, outX * outX + outY * outY)) * 0.62
           }
-          const length = Math.hypot(tx, ty)
-          if (length > cap && length > 0) {
-            tx *= cap / length
-            ty *= cap / length
+          const len2 = tx * tx + ty * ty
+          if (len2 > cap * cap && len2 > 0) {
+            const s = cap / Math.sqrt(len2)
+            tx *= s
+            ty *= s
           }
-          return [tx, ty]
+          out[0] = tx
+          out[1] = ty
         }
         ctx.moveTo(source[0], source[1])
         const segments = closed ? limit : limit - 1
+        const t0 = [0, 0]
+        const t1 = [0, 0]
         for (let k = 0; k < segments; k++) {
-          const start = point(k)
-          const end = point(k + 1)
-          const startTangent = tangent(k)
-          const endTangent = tangent(k + 1)
+          const s = at(k)
+          const e = at(k + 1)
+          tangentAt(k, t0)
+          tangentAt(k + 1, t1)
           ctx.bezierCurveTo(
-            start[0] + startTangent[0], start[1] + startTangent[1],
-            end[0] - endTangent[0], end[1] - endTangent[1],
-            end[0], end[1],
+            source[s] + t0[0], source[s + 1] + t0[1],
+            source[e] - t1[0], source[e + 1] - t1[1],
+            source[e], source[e + 1],
           )
         }
         /* Mark a ring as a RING. The cyclic tangents above already make the seam C1
@@ -1310,9 +2945,117 @@ function apply(ctx) {
            of issue #3. contour-cusps.test.js guards this. */
         if (closed) ctx.closePath()
       }
+      const isRing = (p) => {
+        const n = p.length - 2
+        return n >= 2 && (p[0] - p[n]) ** 2 + (p[1] - p[n + 1]) ** 2 < 4
+      }
+      /* ONE STROKE, RINGS FIRST — and the ORDER matters for the canvas fallback, not
+         for looks. `closePath()` on a real 2D context finalises the current subpath by
+         splicing it into the path accumulated so far, so its cost grows with
+         everything already in that path (measured on the canvas fallback: 18 calls per
+         sheet averaging 0.278 ms, max 1.2 ms, ~16% of the frame). Drawing the rings
+         while the path still holds only other rings bounds every splice to ring
+         geometry. Output is unchanged either way: canvas stroke coverage is a union,
+         and the WebGL painter blends with MAX (commutative), so subpath order cannot
+         affect the result. Stroking each path separately would also fix the cost but
+         double-composites overlapping strokes and visibly darkens every crossing —
+         the very "piled-up lines" look this avoids. */
       ctx.beginPath()
-      for (let i = 0; i < contourPaths.length; i++) drawSmoothPath(smoothPath(contourPaths[i]))
+      for (let i = 0; i < contourPaths.length; i++) {
+        const p = contourPaths[i]
+        if (isRing(p)) drawSmoothPath(smoothPath(p))
+      }
+      for (let i = 0; i < contourPaths.length; i++) {
+        const p = contourPaths[i]
+        if (!isRing(p)) drawSmoothPath(smoothPath(p))
+      }
       ctx.stroke()
+    }
+
+    /* Optional worker backend. One in-flight frame and one latest pending frame. */
+    const CONTOUR_RENDERER_KEY = 'dsh-theme-endfield-contour-renderer'
+    const readContourRenderer = () => prefsGet(CONTOUR_RENDERER_KEY) === 'worker-webgl' ? 'worker-webgl' : 'canvas'
+    let contourWorker = null, contourWorkerFailed = false, contourBackendChoice = 'canvas'
+    const contourDisposeWorker = () => {
+      const state = contourWorker
+      contourWorker = null
+      if (!state) return
+      clearTimeout(state.timer)
+      state.worker.terminate()
+      URL.revokeObjectURL(state.url)
+      state.pending = null
+    }
+    const contourWorkerFail = (state, reason) => {
+      if (contourWorker !== state) return
+      contourWorkerFailed = true
+      contourTeardown()
+      syncContour()
+      if (contourWrap) contourWrap.setAttribute('data-endfield-renderer-reason', reason)
+    }
+    const contourFlushWorker = () => {
+      const state = contourWorker
+      if (!state || !state.ready || state.busy || !state.pending || document.hidden) return
+      const frame = state.pending
+      state.pending = null; state.busy = true
+      state.seq += 1
+      state.timer = setTimeout(() => contourWorkerFail(state, 'worker render timeout'), 2000)
+      try { state.worker.postMessage({...frame, type:'frame', seq:state.seq}) }
+      catch (error) { contourWorkerFail(state, 'worker frame submission failed') }
+    }
+    const contourStartWorker = (canvas) => {
+      if (readContourRenderer() !== 'worker-webgl' || contourWorkerFailed) return
+      if (typeof Worker !== 'function' || typeof OffscreenCanvas !== 'function'
+        || typeof canvas.transferControlToOffscreen !== 'function') {
+        contourWorkerFailed = true
+        return
+      }
+      let url = null, worker = null
+      try {
+        url = URL.createObjectURL(new Blob([CONTOUR_WORKER_SOURCE], {type:'text/javascript'}))
+        worker = new Worker(url)
+        const state = {worker,url,ready:false,busy:false,pending:null,seq:0,timer:null}
+        contourWorker = state
+        state.timer = setTimeout(() => contourWorkerFail(state, 'worker initialization timeout'), 8000)
+        worker.onmessage = ({data}) => {
+          if (contourWorker !== state) return
+          if (data.type === 'ready') {
+            try {
+              const offscreen = canvas.transferControlToOffscreen()
+              worker.postMessage({type:'init',canvas:offscreen,seed:contourSeed},[offscreen])
+            } catch(error) { contourWorkerFail(state,'canvas transfer failed') }
+          } else if (data.type === 'initialized') {
+            clearTimeout(state.timer); state.ready = true
+            if (contourWrap) contourWrap.setAttribute('data-endfield-renderer',data.rasterizer)
+            contourFlushWorker()
+          } else if (data.type === 'painted') {
+            if (!state.busy || data.seq !== state.seq) return
+            clearTimeout(state.timer);state.busy = false
+            contourFlushWorker()
+          } else if (data.type === 'error') contourWorkerFail(state,data.message || 'worker failed')
+        }
+        worker.addEventListener('error', () => contourWorkerFail(state,'worker error'))
+        worker.addEventListener('messageerror', () => contourWorkerFail(state,'worker message error'))
+      } catch(error) {
+        if(worker)worker.terminate()
+        if(url)URL.revokeObjectURL(url)
+        contourWorker = null;contourWorkerFailed = true
+      }
+    }
+    const contourRefresh = (geometry) => {
+      if (contourWorker !== null) {
+        if (!contourGeom || document.hidden) return
+        const ratio = Math.min(2, Math.max(.1, window.devicePixelRatio || 1))
+        const pending = contourWorker.pending
+        contourWorker.pending = {w:contourGeom.w,h:contourGeom.h,dpr:ratio,phase:contourPhase,
+          color:contourStroke(),geometry:geometry || !!(pending && pending.geometry)}
+        contourFlushWorker()
+      } else {
+        /* The main-thread painter runs the SAME entry point the animation frame
+           uses, so the mouse trail is sampled and folded into the field here too;
+           calling contourExtract directly would bypass the trail entirely. */
+        if (geometry) contourExtractFrame(contourPhase)
+        contourDrawLines()
+      }
     }
 
     /* The app frame: the only ancestor that is both position:relative and free of a
@@ -1337,6 +3080,62 @@ function apply(ctx) {
       return frame
     }
 
+    // DOM sampling stays outside the extraction kernel, which remains usable
+    // by headless geometry tests and future renderers with explicit trail input.
+    const contourExtractFrame = (phase) => {
+      if (!contourTrailListening) { contourExtract(phase); return }
+      const now = (typeof performance !== 'undefined' && typeof performance.now === 'function')
+        ? performance.now() : Date.now()
+      if (contourTrailPointer !== null && contourHost !== null) {
+        const point = contourTrailPointer
+        contourTrailPointer = null
+        const rect = contourHost.getBoundingClientRect()
+        const x = point.x - rect.left, y = point.y - rect.top
+        if (x >= 0 && y >= 0 && x <= rect.width && y <= rect.height) {
+          contourTrail.push(x, y, point.t, point.receivedAt)
+        }
+      }
+      const points = contourTrail.view(now)
+      contourExtract(phase, points, now)
+      contourTrailPainted = points.length > 0
+    }
+
+    const onContourPointerMove = (event) => {
+      if (event.pointerType !== 'mouse' || event.isPrimary === false || !contourTrailListening) return
+      contourTrailPointer = { x: event.clientX, y: event.clientY, t: event.timeStamp,
+        receivedAt: (typeof performance !== 'undefined' && typeof performance.now === 'function')
+          ? performance.now() : Date.now() }
+    }
+    const onContourPointerLeave = () => { contourTrailPointer = null }
+    const contourResetTrail = (redraw) => {
+      const painted = contourTrailPainted
+      contourTrail.clear()
+      contourTrailPointer = null
+      contourTrailPainted = false
+      if (redraw && painted && contourWrap !== null && contourField !== null) {
+        contourExtractFrame(contourPhase)
+        contourDrawLines()
+      }
+    }
+    const contourSyncTrail = (active) => {
+      if (active === contourTrailListening) return
+      contourTrailListening = active
+      if (contourHost !== null && typeof contourHost.addEventListener === 'function') {
+        if (active) {
+          contourHost.addEventListener('pointermove', onContourPointerMove, { passive: true, capture: true })
+          contourHost.addEventListener('pointerleave', onContourPointerLeave, { passive: true })
+        } else {
+          contourHost.removeEventListener('pointermove', onContourPointerMove, true)
+          contourHost.removeEventListener('pointerleave', onContourPointerLeave)
+        }
+      }
+      if (!active) contourResetTrail(true)
+    }
+    const onContourEnvironmentChange = () => {
+      contourResetTrail(true)
+      contourSwitchSig = ''
+      contourApplySwitches()
+    }
     const contourSizeTo = (host) => {
       const r = host.getBoundingClientRect()
       const w = Math.max(1, Math.round(r.width))
@@ -1350,10 +3149,17 @@ function apply(ctx) {
         && typeof window.devicePixelRatio === 'number'
         && window.devicePixelRatio > 0) ? window.devicePixelRatio : 1
       const dpr = Math.min(2, ratio)
+      if (contourWorker !== null) {
+        const changed = contourGeom === null || contourGeom.w !== w || contourGeom.h !== h || contourGeom.dpr !== dpr
+        contourGeom = {w,h,dpr}
+        if (contourLineCv) { contourLineCv.style.width = w + 'px'; contourLineCv.style.height = h + 'px' }
+        return changed
+      }
       const bw = Math.max(1, Math.round(w * dpr))
       const bh = Math.max(1, Math.round(h * dpr))
       if (contourGeom !== null && contourGeom.w === w && contourGeom.h === h
         && (contourLineCv === null || (contourLineCv.width === bw && contourLineCv.height === bh))) return false
+      contourResetTrail(false)
       contourBuild(w, h)
       if (contourLineCv !== null) {
         contourLineCv.width = bw
@@ -1364,7 +3170,14 @@ function apply(ctx) {
       return true
     }
 
+    /* One chain per run. The refresh inside the frame can reenter this loop from
+       the worker-failure path (contourWorkerFail -> contourTeardown -> syncContour
+       -> contourStartLoop) and queue the next frame while this callback is still
+       executing; the stamp lets the tail notice that and keep its hands off,
+       instead of stranding a second chain that no later teardown can cancel. */
+    let contourLoopGen = 0
     const contourFrame = () => {
+      const gen = contourLoopGen
       if (contourWrap === null) {
         contourRaf = null
         return
@@ -1373,22 +3186,30 @@ function apply(ctx) {
       // nothing, not merely skip work inside a still-running rAF.
       if (!contourWantsAnim()) {
         contourRaf = null
+        contourApplySwitches()
         return
       }
       const now = (typeof performance !== 'undefined' && typeof performance.now === 'function')
         ? performance.now() : Date.now()
-      // Field pass, throttled: this is the expensive part (~4.4 ms measured).
+      /* Field pass, throttled: this is the expensive part (~4.4 ms measured for the
+         field alone). The interval also respects the measured cost of the last
+         refresh, which only binds on the synchronous painter — see CONTOUR_DUTY. */
       const fps = contourFieldFps()
-      if (contourLastField < 0 || now - contourLastField >= 1000 / fps) {
+      const interval = Math.max(1000 / fps, contourLastCost > 0 ? contourLastCost / CONTOUR_DUTY : 0)
+      if (contourLastField < 0 || now - contourLastField >= interval) {
         /* Always advance by ONE NOMINAL FRAME. A delayed rAF must not catch up by
            applying its whole wall-clock gap: that makes the extracted contour jump
            and creates a visible twitch. The animation resumes smoothly instead of
-           teleporting after a scroll, resize or busy main-thread interval. */
+           teleporting after a scroll, resize or busy main-thread interval — and with
+           the duty cycle above, "resumes smoothly" is the slow path too, rather than
+           a stall followed by a jump. */
         contourLastField = now
         contourPhase += CONTOUR_PHASE_STEP * readContourSpeed() // speed changes drift, not refresh rate
-        contourExtract(contourPhase)
-        contourDrawLines()
+        contourRefresh(true)
+        contourLastCost = ((typeof performance !== 'undefined' && typeof performance.now === 'function')
+          ? performance.now() : Date.now()) - now
       }
+      if (gen !== contourLoopGen) return
       contourRaf = (typeof requestAnimationFrame === 'function') ? requestAnimationFrame(contourFrame) : null
     }
 
@@ -1397,15 +3218,30 @@ function apply(ctx) {
       if (typeof requestAnimationFrame !== 'function') return
       if (!contourWantsAnim()) return
       contourLastField = -1
+      contourLoopGen += 1
       contourRaf = requestAnimationFrame(contourFrame)
     }
     const contourStopLoop = () => {
+      contourLoopGen += 1
       if (contourRaf !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(contourRaf)
       contourRaf = null
+      contourSyncTrail(false)
     }
 
     const contourTeardown = () => {
+      contourResetTrail(false)
       contourStopLoop()
+      if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+        document.removeEventListener('visibilitychange', onContourEnvironmentChange)
+      }
+      if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+        window.removeEventListener('blur', onContourEnvironmentChange)
+      }
+      if (contourMotionQuery !== null && typeof contourMotionQuery.removeEventListener === 'function') {
+        contourMotionQuery.removeEventListener('change', onContourEnvironmentChange)
+      }
+      contourMotionQuery = null
+      contourDisposeWorker()
       if (contourRo !== null) {
         contourRo.disconnect()
         contourRo = null
@@ -1437,18 +3273,26 @@ function apply(ctx) {
        token) is a single string compare. */
     const contourApplySwitches = () => {
       const anim = contourWantsAnim()
-      const sig = anim ? 'a' : '-'
+      const trail = anim && contourHost !== null && isContourTrailOn()
+      const sig = (anim ? 'a' : '-') + (trail ? 't' : '-')
       if (sig === contourSwitchSig) return
       contourSwitchSig = sig
+      contourSyncTrail(trail)
       // Animation just switched off: redraw once from the current phase so the
       // static sheet is a complete picture rather than a half-updated frame.
-      if (!anim && contourWrap !== null && contourGeom !== null) contourDrawLines()
+      if (!anim && contourWrap !== null && contourGeom !== null) contourRefresh(false)
       if (anim) contourStartLoop()
       else contourStopLoop()
     }
 
     /** Build/refresh/remove the layer to match the switches and the current page. */
     const syncContour = () => {
+      const choice = readContourRenderer()
+      if (choice !== contourBackendChoice) {
+        contourTeardown()
+        contourWorkerFailed = false
+        contourBackendChoice = choice
+      }
       const on = isEnabled() && isContourOn()
       if (!on) {
         if (contourWrap !== null) contourTeardown()
@@ -1482,25 +3326,25 @@ function apply(ctx) {
           wrap.appendChild(line)
           contourLineCv = line
           // First child: keeps the layer at the bottom of the frame's paint order.
-          // If a custom background image is also mounted, keep it BELOW the contour
-          // lines by inserting the contour after the image layer (DOM order decides
-          // the paint order for two same-z-index siblings).
-          let bgImageSibling = null
-          for (let i = 0; i < host.childNodes.length; i++) {
-            const n = host.childNodes[i]
-            if (n.nodeType === 1 && n.getAttribute && n.getAttribute('data-endfield-bg-image') !== null) {
-              bgImageSibling = n.nextSibling
-              break
-            }
-          }
-          if (bgImageSibling !== null) host.insertBefore(wrap, bgImageSibling)
-          else if (host.firstChild) host.insertBefore(wrap, host.firstChild)
+          if (host.firstChild) host.insertBefore(wrap, host.firstChild)
           else host.appendChild(wrap)
           contourWrap = wrap
           contourHost = host
+          document.addEventListener('visibilitychange', onContourEnvironmentChange)
+          if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+            window.addEventListener('blur', onContourEnvironmentChange)
+          }
+          if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+            contourMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+            if (typeof contourMotionQuery.addEventListener === 'function') {
+              contourMotionQuery.addEventListener('change', onContourEnvironmentChange)
+            }
+          }
+          contourStartWorker(line)
+          wrap.setAttribute('data-endfield-renderer', contourWorker ? 'starting' : 'main-canvas2d')
+          if (contourWorkerFailed) wrap.setAttribute('data-endfield-renderer-reason', 'worker unavailable; main Canvas2D fallback')
           contourSizeTo(host)
-          contourExtract(contourPhase)
-          contourDrawLines()
+          contourRefresh(true)
           // A fresh mount has drawn nothing switch-specific yet, so force the
           // reconciliation below to run rather than trusting a stale signature.
           contourSwitchSig = ''
@@ -1512,8 +3356,7 @@ function apply(ctx) {
                 return
               }
               if (contourSizeTo(contourHost)) {
-                contourExtract(contourPhase)
-                contourDrawLines()
+                contourRefresh(true)
               }
             })
             contourRo.observe(host)
@@ -1539,14 +3382,14 @@ function apply(ctx) {
       if (typeof MutationObserver === 'undefined' || typeof document === 'undefined' || document.body === null) return
       contourSchemeObserver = new MutationObserver(() => {
         if (contourWrap === null) return
-        contourDrawLines()
+        contourRefresh(false)
       })
       contourSchemeObserver.observe(document.body, { attributes: true, attributeFilter: ['data-ds-dark-theme', 'class'] })
     }
     const contourSchemeObserverLate = () => {
       installContourSchemeObserver()
       // Catch up: the scheme may have settled while the observer was absent.
-      if (contourSchemeObserver !== null && contourWrap !== null) contourDrawLines()
+      if (contourSchemeObserver !== null && contourWrap !== null) contourRefresh(false)
     }
     if (typeof document !== 'undefined' && document.body !== null) installContourSchemeObserver()
     else if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
@@ -1554,243 +3397,19 @@ function apply(ctx) {
     }
     // Let the page observer declared above re-attach the layer as the app renders.
     contourSyncHook = syncContour
-
-    /* ---------- custom background image (settings-toggleable, default OFF) ------
-       A user-supplied image layer behind the whole app. It is deliberately the same
-       mounting strategy as the contour sheet, so it shares every one of the contour
-       notes about the app frame: a child of the frame with inset:0 / z-index:0,
-       painted above the frame's own background and below every positioned
-       descendant. The frame's descendant fills are neutralised to transparent only
-       while this layer is mounted (the :has() guard in the stylesheet makes the
-       rules a no-op the moment it is removed).
-
-       Readability is handled by a scrim overlay, not by leaving content opaque:
-       the mask is a colour-mix of the app's own bg-base, so it washes the image
-       toward whatever surface the UI text was designed on and adapts to both the
-       light and dark schemes. It is user-adjustable from 0 (raw image) to 90%. */
-    const BG_IMAGE_ON_KEY = 'dsh-theme-endfield-bg-image-on'
-    const BG_IMAGE_URL_KEY = 'dsh-theme-endfield-bg-image-url'
-    const BG_IMAGE_MASK_KEY = 'dsh-theme-endfield-bg-image-mask'
-    const BG_IMAGE_FIT_KEY = 'dsh-theme-endfield-bg-image-fit'
-    const BG_IMAGE_MASK_DEFAULT = 55
-    /* Stable body class while the global full-page image is active. This is what
-       owns the background transparency (especially the sidebar) instead of
-       relying only on transient DOM/:has() state, so the nav does not flicker
-       or only reveal the image on hover. */
-    const BG_ACTIVE_CLASS = 'theme-endfield-bg-on'
-    const BG_IMAGE_MASK_MIN = 0
-    const BG_IMAGE_MASK_MAX = 90
-    const BG_IMAGE_FIT_OPTIONS = ['cover', 'contain']
-    // Default OFF (=== '1'): a full-bleed image layer is opt-in decoration.
-    const isBgImageOn = () => (typeof localStorage !== 'undefined' && localStorage.getItem(BG_IMAGE_ON_KEY)) === '1'
-    const readBgImageUrl = () => {
-      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(BG_IMAGE_URL_KEY) : null
-      return typeof raw === 'string' ? raw.trim() : ''
+    /* BEGIN GENERATED CONTOUR WORKER */
+    const CONTOUR_WORKER_SOURCE = "/* Dedicated contour worker. Kernel is extracted from client.js by the build script.\n * MIT; original terrain Copyright (c) 2026 ymh0000123. */\nconst CONTOUR_STEP = 6, CONTOUR_LEVELS = 20, CONTOUR_SPAN = 1.45\nconst CONTOUR_MIN_LEN = 40, CONTOUR_MIN_RING_BOX = 21\nconst CONTOUR_KEEP_LEN = CONTOUR_MIN_LEN * 1.35, CONTOUR_KEEP_RING = CONTOUR_MIN_RING_BOX * 1.5\nconst CONTOUR_MIN_CROSSINGS = 3\n/* The kernel's own constants. The build script extracts FUNCTIONS only, so anything\n   contourBuild / contourBuildCandidate / contourDrawLines close over has to be mirrored\n   here by hand: the grid cap and the bump-radius floor, plus the Chaikin pass budget\n   `smoothPath` reads. A missing name is a ReferenceError inside the worker. */\nconst CONTOUR_MAX_CELLS = 60000, CONTOUR_MIN_BUMPSAMPLES = 4\nconst CONTOUR_SMOOTH_FULL = 8000, CONTOUR_SMOOTH_LIMIT = 20000\nconst CONTOUR_MIN_INK = 80\nlet contourSeed = 1, contourField = null, contourGeom = null, contourPaths = []\nlet contourLineCv = null, canvas = null, painter = null, stroke = 'rgba(0,0,0,0)', rasterizer = null\nconst contourStroke = () => stroke\nconst contourRng = (seed) => {\n      let a = seed >>> 0\n      return () => {\n        a = (a + 0x6D2B79F5) >>> 0\n        let t = Math.imul(a ^ (a >>> 15), 1 | a)\n        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t\n        return ((t ^ (t >>> 14)) >>> 0) / 4294967296\n      }\n    }\nconst contourStepFor = (w, h) => {\n      let step = CONTOUR_STEP\n      const cells = (s) => (Math.ceil(w / s) + 1) * (Math.ceil(h / s) + 1)\n      while (step < 40 && cells(step) > CONTOUR_MAX_CELLS) step += 1\n      return step\n    }\nconst contourBuild = (w, h) => {\n      /* ACCEPT-OR-REROLL. A random layout is not automatically a GOOD layout, and\n         this is the concrete lesson from making the seed per-load: the old fixed\n         seed had silently guaranteed a well-spread field, and once real randomness\n         arrived, some layouts left regions with no contour lines at all. Measured on\n         the 8x5 coverage grid (\"near-empty\" = under 0.6% ink):\n             independent uniform placement   5 failures in 12 seeds (up to 3 cells)\n             stratified placement alone      6 failures in 24 seeds (down to 0.00%)\n         Stratification fixes clumping but cannot fix the real mechanism: lines\n         appear only where the field CROSSES one of the 21 fixed levels, so a region\n         that is locally flat between two levels is blank no matter how the bumps\n         sit. Forcing a gradient steep enough to guarantee a crossing per cell would\n         take ~9.5 parallel lines across the width, which reads as stripes, not\n         terrain -- so distorting the field is the wrong lever.\n         Instead the candidate layout is CHECKED against the same invariant the test\n         asserts, and rejected if it fails. Each attempt is cheap (one field\n         evaluation on a coarse grid, no extraction, no drawing) and bounded, so the\n         worst case is a handful of evaluations at mount/resize time only.\n\n         The two halves are BOTH load-bearing, which was verified rather than\n         assumed -- with the validator in place but placement reverted to uniform,\n         4 of 8 loads exhausted the 12-attempt cap and shipped a fallback layout\n         (one run in four still rendered a blank cell). Stratification is what makes\n         an acceptable layout the common case: mean 2.5 candidates, max 6, never at\n         the cap. Validation is what makes it a guarantee. */\n      const attempts = 32\n      const step = contourStepFor(w, h)\n      let best = null\n      for (let attempt = 0; attempt < attempts; attempt++) {\n        const cand = contourBuildCandidate(w, h, attempt, step)\n        const score = contourCoverageScore(cand, w, h)\n        /* Prefer more crossing bands, then more ink in the thinnest region. The\n           tiebreak only matters if every attempt fails validation and the best of the\n           32 ships — measured at 0 of 200 seeds with the floor in place. */\n        if (best === null || score.worst > best.score.worst\n          || (score.worst === best.score.worst && score.ink > best.score.ink)) best = { cand, score }\n        // Comfortably above the 0.6%-ink failure line, in field terms: every cell\n        // must contain a spread of values wider than one level gap, so at least one\n        // level is guaranteed to cross it.\n        if (score.ok) break\n      }\n      contourField = best.cand.field\n      contourGeom = { w, h, cols: best.cand.cols, rows: best.cand.rows, step }\n    }\nconst contourBuildCandidate = (w, h, salt, step) => {\n      const cols = Math.ceil(w / step) + 1\n      const rows = Math.ceil(h / step) + 1\n      const K = 22                       // bump count: tuned to the reference's island density\n      const rnd = contourRng((contourSeed + salt * 0x9E3779B1) >>> 0)\n      const m = Math.min(w, h)\n      const bx = new Float32Array(K), by = new Float32Array(K)\n      const ba = new Float32Array(K), bs = new Float32Array(K)\n      const dx = new Float32Array(K), dy = new Float32Array(K)\n      /* STRATIFIED placement, not independent uniform draws.\n\n         Uniform sampling clumps: measured over 12 random seeds it left up to 3\n         near-empty cells. Jittered grid instead -- the viewport is cut into a\n         near-square lattice of at least K cells and each bump is placed at a random\n         point inside its own cell. That keeps placement random while making a large\n         empty patch geometrically impossible. Cells are ordered by a Fisher-Yates\n         shuffle so the bump INDEX carries no positional bias: index drives\n         amplitude, radius and drift below, and walking cells in raster order would\n         correlate \"left side of the screen\" with \"first sizes drawn\".\n         The lattice spans the same -0.1..1.1 over-scan as before, so islands are\n         still cut by the viewport edges rather than all sitting fully inside. */\n      const gx = Math.max(1, Math.round(Math.sqrt(K * (w / Math.max(1, h)))))\n      const gy = Math.max(1, Math.ceil(K / gx))\n      const cells = []\n      for (let j = 0; j < gy; j++) for (let i = 0; i < gx; i++) cells.push(i + j * gx)\n      for (let i = cells.length - 1; i > 0; i--) {\n        const j = Math.floor(rnd() * (i + 1))\n        const t = cells[i]; cells[i] = cells[j]; cells[j] = t\n      }\n      const spanX = 1.2 * w, spanY = 1.2 * h\n      for (let k = 0; k < K; k++) {\n        const cell = cells[k % cells.length]\n        const ci = cell % gx\n        const cj = Math.floor(cell / gx)\n        // Random point inside this cell, in the over-scanned -0.1..1.1 space.\n        bx[k] = -0.1 * w + ((ci + rnd()) / gx) * spanX\n        by[k] = -0.1 * h + ((cj + rnd()) / gy) * spanY\n        // Mixed sign gives peaks AND basins; equal signs would read as one blob.\n        ba[k] = (rnd() < 0.5 ? -1 : 1) * (0.6 + rnd() * 0.9)\n        /* Radius: relative to the frame for the shipped look, but never below\n           CONTOUR_MIN_BUMPSAMPLES grid samples or the field aliases — see the note on\n           that constant. This floor is the fix for the tangled/piled-up lines. */\n        bs[k] = Math.max(step * CONTOUR_MIN_BUMPSAMPLES, (0.05 + rnd() * 0.09) * m)\n        dx[k] = rnd() * 2 - 1\n        dy[k] = rnd() * 2 - 1\n      }\n      /* Base undulation: three long, low-amplitude sine ridges spanning the whole\n         viewport. Reason this exists, from reviewing the first render: a sum of\n         gaussians decays to EXACTLY zero between islands, so the field there is\n         perfectly flat, no level ever crosses it, and the result had large blank\n         patches that exposed the construction. Real terrain has no such voids. The\n         ridges are far too gentle to create islands of their own — they just tilt\n         the whole sheet enough that contour lines keep running through the gaps,\n         which is what turns isolated bullseyes into one continuous landscape. */\n      const W2 = new Float32Array(9)\n      for (let i = 0; i < 3; i++) {\n        W2[i * 3] = (0.35 + rnd() * 0.5) * (Math.PI * 2) / Math.max(1, w)  // x freq\n        W2[i * 3 + 1] = (0.35 + rnd() * 0.5) * (Math.PI * 2) / Math.max(1, h) // y freq\n        W2[i * 3 + 2] = rnd() * Math.PI * 2                                 // phase\n      }\n      const hCount = (cols - 1) * rows\n      const eCount = hCount + cols * (rows - 1)\n      const field = {\n        cols, rows, step, K, bx, by, ba, bs, dx, dy, hCount, W2,\n        F: new Float32Array(cols * rows),\n        previous: new Float32Array(cols * rows),\n        hasPrevious: false,\n        smooth: new Float32Array(cols * rows),\n        // Exact row-block bounds include both rows and the shared right vertex.\n        // They reject empty regions without changing retained cells or path order.\n        blockCols: Math.ceil((cols - 1) / 16),\n        blockMin: new Float32Array(Math.ceil((cols - 1) / 16) * (rows - 1)),\n        blockMax: new Float32Array(Math.ceil((cols - 1) / 16) * (rows - 1)),\n        boundsReady: false,\n        ex: new Float32Array(eCount),\n        ey: new Float32Array(eCount),\n        es: new Int32Array(eCount).fill(-1),\n        n1: new Int32Array(eCount).fill(-1),\n        n2: new Int32Array(eCount).fill(-1),\n        seen: new Int32Array(eCount).fill(-1),\n        touched: new Int32Array(eCount),\n        seq: 0,\n      }\n      return { field, cols, rows }\n    }\nconst contourCoverageScore = (cand, w, h) => {\n      const f = cand.field\n      // Evaluate at phase 0: the accepted layout must be sound as first painted.\n      const prev = contourField\n      contourField = f\n      contourEvaluate(0)\n      contourField = prev\n      const { cols, rows, F } = f\n      const GX = 8, GY = 5\n      const span = CONTOUR_SPAN\n      const levelStep = (span * 2) / CONTOUR_LEVELS\n      let worst = Infinity\n      let ok = true\n      let ink = Infinity\n      for (let gy = 0; gy < GY; gy++) {\n        for (let gx = 0; gx < GX; gx++) {\n          const i0 = Math.floor(gx * (cols - 1) / GX), i1 = Math.ceil((gx + 1) * (cols - 1) / GX)\n          const j0 = Math.floor(gy * (rows - 1) / GY), j1 = Math.ceil((gy + 1) * (rows - 1) / GY)\n          let mn = Infinity, mx = -Infinity\n          /* The ink proxy is accumulated over the QUADS of this region, in the same\n             walk that takes its min/max — see CONTOUR_MIN_INK. */\n          let regionInk = 0\n          for (let j = j0; j <= j1 && j < rows; j++) {\n            const row = j * cols\n            for (let i = i0; i <= i1 && i < cols; i++) {\n              const v = F[row + i]\n              if (v < mn) mn = v\n              if (v > mx) mx = v\n              if (j < j1 && j < rows - 1 && i < i1 && i < cols - 1) {\n                const a = v, b = F[row + i + 1]\n                const c = F[row + cols + i], d = F[row + cols + i + 1]\n                let qmn = a < b ? a : b, qmx = a > b ? a : b\n                if (c < qmn) qmn = c; if (c > qmx) qmx = c\n                if (d < qmn) qmn = d; if (d > qmx) qmx = d\n                if (qmn < -span) qmn = -span\n                if (qmx > span) qmx = span\n                if (qmx > qmn) regionInk += Math.floor(qmx / levelStep) - Math.ceil(qmn / levelStep) + 1\n              }\n            }\n          }\n          // Clamp to the drawn level range: values beyond +/-SPAN produce no lines.\n          const lo = Math.max(mn, -span), hi = Math.min(mx, span)\n          // How many level boundaries fall inside this cell's clamped range.\n          const crossings = hi <= lo ? 0\n            : Math.floor(hi / levelStep) - Math.ceil(lo / levelStep) + 1\n          if (crossings < worst) worst = crossings\n          if (crossings < CONTOUR_MIN_CROSSINGS) ok = false\n          if (regionInk < ink) ink = regionInk\n          if (regionInk < CONTOUR_MIN_INK) ok = false\n        }\n      }\n      return { ok, worst, ink }\n    }\nconst contourEvaluate = (phase) => {\n      const f = contourField\n      if (f !== null) f.boundsReady = false\n      if (f === null) return\n      const { cols, rows, step, K, bx, by, ba, bs, dx, dy, F, W2 } = f\n      /* Seed the sheet with the base undulation instead of zero, so the gaps\n         between islands still have a gradient for the levels to cross. Separable\n         evaluation: sin(a+b) is expanded so the y term is computed once per row\n         rather than once per cell, which keeps this pass cheap. */\n      const BASE = 0.62\n      for (let i = 0; i < 3; i++) {\n        const fx = W2[i * 3], fy = W2[i * 3 + 1], ph = W2[i * 3 + 2] + phase * 0.11\n        const amp = BASE / 3\n        for (let j = 0; j < rows; j++) {\n          const yb = fy * (j * step) + ph\n          const sy = Math.sin(yb), cy2 = Math.cos(yb)\n          const row = j * cols\n          for (let c2 = 0; c2 < cols; c2++) {\n            const xb = fx * (c2 * step)\n            // sin(xb + yb) without a per-cell sin() of the sum\n            const v = Math.sin(xb) * cy2 + Math.cos(xb) * sy\n            if (i === 0) F[row + c2] = amp * v\n            else F[row + c2] += amp * v\n          }\n        }\n      }\n      for (let k = 0; k < K; k++) {\n        const s = bs[k]\n        const amp = s * 0.55\n        const cx = bx[k] + Math.sin(phase * dx[k] + k * 1.7) * amp\n        const cy = by[k] + Math.cos(phase * dy[k] + k * 2.3) * amp\n        const a = ba[k]\n        const inv = 1 / (2 * s * s)\n        const rad = 2.6 * s\n        let i0 = Math.floor((cx - rad) / step)\n        let i1 = Math.ceil((cx + rad) / step)\n        let j0 = Math.floor((cy - rad) / step)\n        let j1 = Math.ceil((cy + rad) / step)\n        if (i0 < 0) i0 = 0\n        if (j0 < 0) j0 = 0\n        if (i1 > cols - 1) i1 = cols - 1\n        if (j1 > rows - 1) j1 = rows - 1\n        for (let j = j0; j <= j1; j++) {\n          const ddy = j * step - cy\n          const dy2 = ddy * ddy\n          const row = j * cols\n          for (let i = i0; i <= i1; i++) {\n            const ddx = i * step - cx\n            const q = (ddx * ddx + dy2) * inv\n            if (q < 6.76) {\n              let weight = Math.exp(-q)\n              if (q > 4.8) {\n                const t = (q - 4.8) / (6.76 - 4.8)\n                const fade = 1 - t * t * (3 - 2 * t)\n                weight *= fade\n              }\n              F[row + i] += a * weight\n            }\n          }\n        }\n      }\n      const smooth = f.smooth\n      for (let pass = 0; pass < 5; pass++) {\n        for (let j = 0; j < rows; j++) {\n          const row = j * cols\n          for (let i = 0; i < cols; i++) {\n            const left = F[row + Math.max(0, i - 1)]\n            const center = F[row + i]\n            const right = F[row + Math.min(cols - 1, i + 1)]\n            smooth[row + i] = (left + 2 * center + right) * 0.25\n          }\n        }\n        for (let j = 0; j < rows; j++) {\n          const row = j * cols\n          const up = Math.max(0, j - 1) * cols\n          const down = Math.min(rows - 1, j + 1) * cols\n          for (let i = 0; i < cols; i++) {\n            F[row + i] = (smooth[up + i] + 2 * smooth[row + i] + smooth[down + i]) * 0.25\n          }\n        }\n      }\n      /* Track the field continuously between animation samples. Marching squares\n         can change an entire path at once when a saddle crosses a level; blending\n         the sampled field keeps that topology change from appearing as a twitch. */\n      if (f.hasPrevious && f.previous !== undefined) {\n        for (let i = 0; i < F.length; i++) {\n          f.previous[i] = f.previous[i] * 0.65 + F[i] * 0.35\n          F[i] = f.previous[i]\n        }\n      } else if (f.previous !== undefined) {\n        f.previous.set(F)\n      }\n      f.hasPrevious = true\n    }\nconst contourExtractLevel = (L, out) => {\n      const f = contourField\n      const { cols, rows, step, F, ex, ey, es, n1, n2, seen, touched, hCount } = f\n      const st = ++f.seq\n      let tn = 0\n      const pt = (id, i0, j0, i1, j1) => {\n        if (es[id] === st) return id\n        const a = F[j0 * cols + i0]\n        const b = F[j1 * cols + i1]\n        let t = (L - a) / (b - a)\n        if (!(t >= 0)) t = 0\n        else if (t > 1) t = 1\n        ex[id] = (i0 + (i1 - i0) * t) * step\n        ey[id] = (j0 + (j1 - j0) * t) * step\n        es[id] = st\n        n1[id] = -1\n        n2[id] = -1\n        touched[tn++] = id\n        return id\n      }\n      const link = (a, b) => {\n        if (n1[a] < 0) n1[a] = b\n        else if (n2[a] < 0) n2[a] = b\n        if (n1[b] < 0) n1[b] = a\n        else if (n2[b] < 0) n2[b] = a\n      }\n      for (let j = 0; j < rows - 1; j++) {\n        const row = j * cols\n        for (let i = 0; i < cols - 1; i++) {\n          if (f.boundsReady && i % 16 === 0) {\n            const block = j * f.blockCols + Math.floor(i / 16)\n            if (L <= f.blockMin[block] || L > f.blockMax[block]) {\n              i = Math.min(i + 16, cols - 1) - 1\n              continue\n            }\n          }\n          const p0 = row + i\n          const p1 = p0 + 1\n          const p3 = p0 + cols\n          const p2 = p3 + 1\n          const v0 = F[p0], v1 = F[p1], v2 = F[p2], v3 = F[p3]\n          let mn = v0, mx = v0\n          if (v1 < mn) mn = v1; else if (v1 > mx) mx = v1\n          if (v2 < mn) mn = v2; else if (v2 > mx) mx = v2\n          if (v3 < mn) mn = v3; else if (v3 > mx) mx = v3\n          // Whole cell on one side of the level: nothing crosses it.\n          if (L <= mn || L > mx) continue\n          const idx = (v0 > L ? 1 : 0) | (v1 > L ? 2 : 0) | (v2 > L ? 4 : 0) | (v3 > L ? 8 : 0)\n          const T = () => pt(j * (cols - 1) + i, i, j, i + 1, j)\n          const B = () => pt((j + 1) * (cols - 1) + i, i, j + 1, i + 1, j + 1)\n          const Le = () => pt(hCount + j * cols + i, i, j, i, j + 1)\n          const Ri = () => pt(hCount + j * cols + i + 1, i + 1, j, i + 1, j + 1)\n          switch (idx) {\n            case 1: case 14: link(T(), Le()); break\n            case 2: case 13: link(T(), Ri()); break\n            case 3: case 12: link(Le(), Ri()); break\n            case 4: case 11: link(Ri(), B()); break\n            case 6: case 9: link(T(), B()); break\n            case 7: case 8: link(Le(), B()); break\n            // Ambiguous saddles use the bilinear asymptotic decider. The sign of\n            // a*c-b*d selects whether the diagonal high/low regions are connected;\n            // using the cell average alone is wrong when opposite corners differ in\n            // magnitude and produces the long V-shaped joins seen in the render.\n            case 5: {\n              const a = v0 - L, b = v1 - L, c = v2 - L, d = v3 - L\n              const saddle = a * c - b * d\n              if (saddle > 0) { link(T(), Ri()); link(Le(), B()) }\n              else { link(T(), Le()); link(Ri(), B()) }\n              break\n            }\n            case 10: {\n              const a = v0 - L, b = v1 - L, c = v2 - L, d = v3 - L\n              const saddle = a * c - b * d\n              if (saddle < 0) { link(T(), Le()); link(Ri(), B()) }\n              else { link(T(), Ri()); link(Le(), B()) }\n              break\n            }\n          }\n        }\n      }\n      const walk = (start) => {\n        const path = []\n        let cur = start\n        let prev = -1\n        for (;;) {\n          path.push(ex[cur], ey[cur])\n          seen[cur] = st\n          const a = n1[cur]\n          const b = n2[cur]\n          let nx = -1\n          if (a >= 0 && a !== prev && seen[a] !== st) nx = a\n          else if (b >= 0 && b !== prev && seen[b] !== st) nx = b\n          if (nx < 0) {\n            // Closed loop: step back onto the first point so the ring has no gap.\n            if ((a === start || b === start) && path.length > 4) path.push(ex[start], ey[start])\n            break\n          }\n          prev = cur\n          cur = nx\n        }\n        return path\n      }\n      /* Reject debris before it reaches the draw list. Judged on the path's\n         ON-CANVAS geometry, so an off-grid sliver with no visible pixels is\n         dropped even when its raw length looks respectable. See the note on\n         CONTOUR_MIN_LEN / CONTOUR_MIN_RING_BOX for the measurements behind both\n         thresholds. */\n      const W = contourGeom !== null ? contourGeom.w : 0\n      const H = contourGeom !== null ? contourGeom.h : 0\n      const keep = (p) => {\n        if (p.length < 8) return false\n        // Visible length, plus the bounding box of the part actually on screen.\n        let vis = 0\n        let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity\n        let seenIn = false\n        for (let k = 0; k < p.length; k += 2) {\n          const x = p[k], y = p[k + 1]\n          const inside = x >= 0 && x <= W && y >= 0 && y <= H\n          if (inside) {\n            seenIn = true\n            if (x < minx) minx = x\n            if (x > maxx) maxx = x\n            if (y < miny) miny = y\n            if (y > maxy) maxy = y\n          }\n          if (k >= 2) {\n            const px2 = p[k - 2], py2 = p[k - 1]\n            const prevIn = px2 >= 0 && px2 <= W && py2 >= 0 && py2 <= H\n            if (inside && prevIn) {\n              const dx = x - px2, dy = y - py2\n              vis += Math.sqrt(dx * dx + dy * dy)\n            }\n          }\n        }\n        if (!seenIn) return false            // entirely off-canvas: pure debris\n        if (vis < CONTOUR_KEEP_LEN) return false\n        /* A tiny CLOSED ring is an apex bullseye and reads as a dot. Open chains of\n           the same extent are left alone: they are the visible corner of a stroke\n           that continues off-canvas, and clipping one would punch a hole in a line\n           the user can see running to the edge. */\n        const gapx = p[0] - p[p.length - 2]\n        const gapy = p[1] - p[p.length - 1]\n        const closed = (gapx * gapx + gapy * gapy) < 4\n        if (closed && (maxx - minx) < CONTOUR_KEEP_RING\n          && (maxy - miny) < CONTOUR_KEEP_RING) return false\n        return true\n      }\n      /* TANGENCY NEEDLES. Where a level runs nearly TANGENT to the field, the true\n         isoline has a smooth, very high curvature tip. Marching squares interpolates\n         linearly on a 10px grid, so it cannot represent that tip: it emits a hairpin\n         that goes out and comes straight back, with a BASE (the gap between the\n         apex's two neighbours) far narrower than the 1px stroke. Measured on the real\n         output, worst case: apex 6.26px out from a base of 0.831px.\n\n         At that width the outbound and return strokes paint the SAME pixels, so the\n         pair does not read as a narrow valley — only the protruding whisker shows,\n         which is precisely the \"irregular sharp angle\" in issue #3. Smoothing cannot\n         help: the midpoint spline faithfully reproduces a feature that is genuinely\n         in the geometry, so it has to be removed here, at the source.\n\n         The whole hairpin is collapsed (see the note on the merge below). Both tests\n         are required and were measured over 24 frames (152.6k vertices, 1.18Mpx of\n         ink):\n           base < 2px   the stroke cannot resolve it (a 1px line is ~1px wide)\n           turn > 90    it doubles back rather than merely turning a corner\n         That is 0.7 vertices per frame and 0.0037% of total ink -- artifact removal,\n         not thinning. Real narrow features are untouched: turns over 90 degrees have\n         a median base of 4.03px, well clear of the cutoff, and the whole 8-12px base\n         band (29562 vertices) has a p99 turn of only 21.7 degrees. */\n      const deneedle = (p) => {\n        const n = p.length / 2\n        if (n < 4) return p\n        /* Scan first and return the ORIGINAL array when there is nothing to do, so\n           the overwhelmingly common path allocates nothing at 24fps. */\n        let found = false\n        for (let k = 1; k < n - 1; k++) {\n          const bx = p[(k + 1) * 2] - p[(k - 1) * 2]\n          const by = p[(k + 1) * 2 + 1] - p[(k - 1) * 2 + 1]\n          if (bx * bx + by * by >= 4) continue          // base >= 2px: keep\n          const ax = p[k * 2] - p[(k - 1) * 2]\n          const ay = p[k * 2 + 1] - p[(k - 1) * 2 + 1]\n          const cx = p[(k + 1) * 2] - p[k * 2]\n          const cy = p[(k + 1) * 2 + 1] - p[k * 2 + 1]\n          // turn > 90 degrees <=> the two segment vectors point against each other.\n          if (ax * cx + ay * cy < 0) { found = true; break }\n        }\n        if (!found) return p\n        const gx = p[0] - p[(n - 1) * 2]\n        const gy = p[1] - p[(n - 1) * 2 + 1]\n        const closed = (gx * gx + gy * gy) < 4\n        /* COLLAPSE THE WHOLE NEEDLE, not just its tip. Dropping the apex alone leaves\n           the base itself as a real segment, and that was measured to be worse than\n           the disease: a 0.831px stub inherits the reversal as TWO ~78-degree turns\n           (10.20 -> 0.83 -> 10.25px). The apex AND its far neighbour are therefore\n           both consumed, and the surviving previous vertex is pulled onto the base\n           midpoint -- a sub-pixel move (half of at most 2px) that no 1px stroke can\n           show, leaving one smooth vertex where the hairpin was.\n           Each test uses the SURVIVING previous vertex, so a run of needles collapses\n           progressively instead of each test being fooled by a neighbour that is\n           itself about to be consumed. */\n        const q = [p[0], p[1]]\n        let k = 1\n        while (k < n - 1) {\n          const px = q[q.length - 2], py = q[q.length - 1]\n          const bx = p[(k + 1) * 2] - px, by = p[(k + 1) * 2 + 1] - py\n          if (bx * bx + by * by < 4) {\n            const ax = p[k * 2] - px, ay = p[k * 2 + 1] - py\n            const cx = p[(k + 1) * 2] - p[k * 2], cy = p[(k + 1) * 2 + 1] - p[k * 2 + 1]\n            if (ax * cx + ay * cy < 0) {\n              if (k + 1 < n - 1) {\n                q[q.length - 2] = (px + p[(k + 1) * 2]) / 2\n                q[q.length - 1] = (py + p[(k + 1) * 2 + 1]) / 2\n                k += 2\n                continue\n              }\n              // The far neighbour is the final vertex, which must survive to keep an\n              // endpoint (or a ring's closure) intact: consume only the apex.\n              k += 1\n              continue\n            }\n          }\n          q.push(p[k * 2], p[k * 2 + 1])\n          k += 1\n        }\n        q.push(p[(n - 1) * 2], p[(n - 1) * 2 + 1])\n        /* A ring is closed by REPEATING its start vertex, and the merge above may have\n           nudged that start. Re-anchor the repeat so the ring stays exactly closed and\n           both keep() and the cyclic draw path still classify it as one. */\n        if (closed) {\n          q[q.length - 2] = q[0]\n          q[q.length - 1] = q[1]\n        }\n        return q\n      }\n      // Open chains first (they have a free end), then whatever remains is a loop.\n      // Doing it in this order stops a ring being entered mid-way and split in two.\n      for (let k = 0; k < tn; k++) {\n        const id = touched[k]\n        if (seen[id] !== st && n2[id] < 0) {\n          const p = deneedle(walk(id))\n          if (keep(p)) out.push(p)\n        }\n      }\n      for (let k = 0; k < tn; k++) {\n        const id = touched[k]\n        if (seen[id] !== st) {\n          const p = deneedle(walk(id))\n          if (keep(p)) out.push(p)\n        }\n      }\n    }\nconst contourExtract = (phase, trailPoints, trailNow) => {\n      if (contourField === null) return\n      contourEvaluate(phase)\n      if (trailPoints && trailPoints.length) contourOverlayTrail(contourField, trailPoints, trailNow)\n      const f = contourField\n      // One O(cells) range pass is shared by all 21 extraction levels. Scratch\n      // survives across frames; no resolution, smoothing or density is reduced.\n      for (let j = 0; j < f.rows - 1; j++) {\n        const row = j * f.cols\n        for (let block = 0; block < f.blockCols; block++) {\n          const begin = block * 16\n          const end = Math.min(begin + 16, f.cols - 1)\n          let min = Infinity, max = -Infinity\n          for (let i = begin; i <= end; i++) {\n            const a = f.F[row + i], b = f.F[row + f.cols + i]\n            if (a < min) min = a\n            if (a > max) max = a\n            if (b < min) min = b\n            if (b > max) max = b\n          }\n          const k = j * f.blockCols + block\n          f.blockMin[k] = min\n          f.blockMax[k] = max\n        }\n      }\n      f.boundsReady = true\n      contourPaths = []\n      const span = CONTOUR_SPAN\n      const stepL = (span * 2) / CONTOUR_LEVELS\n      for (let n = 0; n <= CONTOUR_LEVELS; n++) {\n        contourExtractLevel(-span + n * stepL, contourPaths)\n      }\n    }\nconst contourDrawLines = () => {\n      if (contourLineCv === null || contourGeom === null) return\n      const ctx = contourLineCv.getContext('2d')\n      if (!ctx) return\n      const { w, h } = contourGeom\n      /* Geometry stays in CSS px; scale the context to the backing store that\n         contourSizeTo sized at (capped) devicePixelRatio, so strokes rasterise\n         at device resolution instead of being upsampled into blur on HiDPI\n         screens. Derived from the canvas itself, and skipped entirely at a 1x\n         store or when the context has no setTransform (the spliced-in test\n         harnesses), so a 1x render is byte-identical to before. */\n      const scale = (w > 0 && typeof contourLineCv.width === 'number' && contourLineCv.width > 0 && contourLineCv.width !== w)\n        ? contourLineCv.width / w : 1\n      if (scale !== 1 && typeof ctx.setTransform === 'function') ctx.setTransform(scale, 0, 0, scale, 0, 0)\n      ctx.clearRect(0, 0, w, h)\n      ctx.strokeStyle = contourStroke()\n      ctx.lineWidth = 1\n      ctx.lineJoin = 'round'\n      /* Marching squares emits one vertex per grid-cell edge. Three Chaikin passes\n         cut local corners before the clamped cubic B-spline rounds broad bends.\n         This reduces angularity without changing the field or adding another\n         extraction pass. Open endpoints remain fixed; closed rings wrap cyclically.\n\n         PASS COUNT IS SIZE-ADAPTIVE: see CONTOUR_SMOOTH_FULL. Every ordinary window\n         keeps three passes; a bigger sheet drops to two and then one. */\n      const smoothPath = (source) => {\n        const count = source.length / 2\n        if (count < 3) return source\n        const closed = (source[0] - source[source.length - 2]) ** 2\n          + (source[1] - source[source.length - 1]) ** 2 < 4\n        /* Flat scratch throughout: the previous shape built one [x, y] array per\n           point PER PASS — ~14 small arrays per source vertex, ~65k per sheet at\n           1440x900 — which is pure GC inside the animation frame on both painters. */\n        let points = closed ? source.slice(0, source.length - 2) : source.slice()\n        const passes = count <= CONTOUR_SMOOTH_FULL ? 3 : (count <= CONTOUR_SMOOTH_LIMIT ? 2 : 1)\n        for (let pass = 0; pass < passes; pass++) {\n          const n = points.length / 2\n          const limit = closed ? n : n - 1\n          const next = new Array(n * 4)\n          let w2 = 0\n          if (!closed) { next[w2++] = points[0]; next[w2++] = points[1] }\n          for (let k = 0; k < limit; k++) {\n            const a = k * 2\n            const b = ((k + 1) % n) * 2\n            const ax = points[a], ay = points[a + 1]\n            const bx = points[b], by = points[b + 1]\n            next[w2++] = ax * 0.75 + bx * 0.25\n            next[w2++] = ay * 0.75 + by * 0.25\n            next[w2++] = ax * 0.25 + bx * 0.75\n            next[w2++] = ay * 0.25 + by * 0.75\n          }\n          if (!closed) { next[w2++] = points[points.length - 2]; next[w2++] = points[points.length - 1] }\n          points = w2 === next.length ? next : next.slice(0, w2)\n        }\n        if (!closed) return points\n        // Re-anchor the repeated start vertex so the ring stays exactly closed.\n        const out = points.slice()\n        out.push(out[0], out[1])\n        return out\n      }\n      /* Chaikin removes local grid noise. A constrained Catmull-Rom cubic then\n         gives each join one shared tangent. The handle cap prevents overshoot at\n         narrow saddles while the larger tangent factor removes long rounded-polygon\n         bends that remain visible with midpoint quadratics. */\n      const drawSmoothPath = (source) => {\n        const count = source.length / 2\n        if (count < 3) {\n          ctx.moveTo(source[0], source[1])\n          for (let k = 2; k < source.length; k += 2) ctx.lineTo(source[k], source[k + 1])\n          return\n        }\n        const closed = (source[0] - source[source.length - 2]) ** 2\n          + (source[1] - source[source.length - 1]) ** 2 < 4\n        const limit = closed ? count - 1 : count\n        const at = (index) => {\n          const k = closed\n            ? (index + limit) % limit\n            : Math.max(0, Math.min(limit - 1, index))\n          return k * 2\n        }\n        /* Tangents from scalars, with squared lengths wherever the comparison allows\n           it. The previous shape allocated eight [x, y] arrays and ran up to six\n           Math.hypot per SEGMENT — tens of thousands of segments per frame, on both\n           the WebGL painter and the canvas fallback. Math.sqrt replaces hypot because\n           every argument here is a pixel delta, far from hypot's overflow range. */\n        const tangentAt = (index, out) => {\n          const i = at(index)\n          const p = at(index - 1)\n          const n = at(index + 1)\n          const cx = source[i], cy = source[i + 1]\n          const inX = cx - source[p], inY = cy - source[p + 1]\n          const outX = source[n] - cx, outY = source[n + 1] - cy\n          let tx, ty, cap\n          if (!closed && index === 0) {\n            tx = outX * 0.4\n            ty = outY * 0.4\n            cap = Math.sqrt(outX * outX + outY * outY) * 0.55\n          } else if (!closed && index === limit - 1) {\n            tx = inX * 0.4\n            ty = inY * 0.4\n            cap = Math.sqrt(inX * inX + inY * inY) * 0.55\n          } else {\n            tx = (source[n] - source[p]) * 0.32\n            ty = (source[n + 1] - source[p + 1]) * 0.32\n            cap = Math.sqrt(Math.min(inX * inX + inY * inY, outX * outX + outY * outY)) * 0.62\n          }\n          const len2 = tx * tx + ty * ty\n          if (len2 > cap * cap && len2 > 0) {\n            const s = cap / Math.sqrt(len2)\n            tx *= s\n            ty *= s\n          }\n          out[0] = tx\n          out[1] = ty\n        }\n        ctx.moveTo(source[0], source[1])\n        const segments = closed ? limit : limit - 1\n        const t0 = [0, 0]\n        const t1 = [0, 0]\n        for (let k = 0; k < segments; k++) {\n          const s = at(k)\n          const e = at(k + 1)\n          tangentAt(k, t0)\n          tangentAt(k + 1, t1)\n          ctx.bezierCurveTo(\n            source[s] + t0[0], source[s + 1] + t0[1],\n            source[e] - t1[0], source[e + 1] - t1[1],\n            source[e], source[e + 1],\n          )\n        }\n        /* Mark a ring as a RING. The cyclic tangents above already make the seam C1\n           and the final span already lands exactly on the start point, so this adds\n           no geometry — but without it the canvas treats the path as open and butts\n           two caps together at the seam instead of joining them, which is defect (2)\n           of issue #3. contour-cusps.test.js guards this. */\n        if (closed) ctx.closePath()\n      }\n      const isRing = (p) => {\n        const n = p.length - 2\n        return n >= 2 && (p[0] - p[n]) ** 2 + (p[1] - p[n + 1]) ** 2 < 4\n      }\n      /* ONE STROKE, RINGS FIRST — and the ORDER matters for the canvas fallback, not\n         for looks. `closePath()` on a real 2D context finalises the current subpath by\n         splicing it into the path accumulated so far, so its cost grows with\n         everything already in that path (measured on the canvas fallback: 18 calls per\n         sheet averaging 0.278 ms, max 1.2 ms, ~16% of the frame). Drawing the rings\n         while the path still holds only other rings bounds every splice to ring\n         geometry. Output is unchanged either way: canvas stroke coverage is a union,\n         and the WebGL painter blends with MAX (commutative), so subpath order cannot\n         affect the result. Stroking each path separately would also fix the cost but\n         double-composites overlapping strokes and visibly darkens every crossing —\n         the very \"piled-up lines\" look this avoids. */\n      ctx.beginPath()\n      for (let i = 0; i < contourPaths.length; i++) {\n        const p = contourPaths[i]\n        if (isRing(p)) drawSmoothPath(smoothPath(p))\n      }\n      for (let i = 0; i < contourPaths.length; i++) {\n        const p = contourPaths[i]\n        if (!isRing(p)) drawSmoothPath(smoothPath(p))\n      }\n      ctx.stroke()\n    }\n/* MIT; contributed by higekibaka. GPU stroke painter from Endfield Glass. */\nconst CURVE_TOLERANCE_PX = 0.04;\nconst STRIDE = 6;\nclass StrokeSegments {\n  data = new Float32Array(4096 * STRIDE);\n  used = 0;\n  tolerance = CURVE_TOLERANCE_PX;\n  x = 0;\n  y = 0;\n  startX = 0;\n  startY = 0;\n  first = 0;\n  reset() {\n    this.used = 0;\n    this.first = 0;\n  }\n  moveTo(x, y) {\n    this.x = this.startX = x;\n    this.y = this.startY = y;\n    this.first = this.used;\n  }\n  lineTo(x, y) {\n    if (x === this.x && y === this.y) return;\n    if (this.used + STRIDE > this.data.length) {\n      const next = new Float32Array(this.data.length * 2);\n      next.set(this.data);\n      this.data = next;\n    }\n    const i = this.used;\n    this.data[i] = this.x;\n    this.data[i + 1] = this.y;\n    this.data[i + 2] = x;\n    this.data[i + 3] = y;\n    this.data[i + 4] = i === this.first ? 1 : 0;\n    this.data[i + 5] = 1;\n    if (i > this.first) this.data[i - 1] = 0;\n    this.used += STRIDE;\n    this.x = x;\n    this.y = y;\n  }\n  closePath() {\n    this.lineTo(this.startX, this.startY);\n    if (this.used > this.first) {\n      this.data[this.first + 4] = 0;\n      this.data[this.used - 1] = 0;\n    }\n  }\n  bezierCurveTo(ax, ay, bx, by, x, y) {\n    this.cubic(this.x, this.y, ax, ay, bx, by, x, y, 0);\n  }\n  cubic(x0, y0, x1, y1, x2, y2, x3, y3, depth) {\n    const dx = x3 - x0, dy = y3 - y0, length2 = dx * dx + dy * dy;\n    const tolerance2 = this.tolerance * this.tolerance;\n    const t1 = length2 > 0 ? Math.max(0, Math.min(1, ((x1 - x0) * dx + (y1 - y0) * dy) / length2)) : 0;\n    const t2 = length2 > 0 ? Math.max(0, Math.min(1, ((x2 - x0) * dx + (y2 - y0) * dy) / length2)) : 0;\n    const e1x = x1 - x0 - t1 * dx, e1y = y1 - y0 - t1 * dy;\n    const e2x = x2 - x0 - t2 * dx, e2y = y2 - y0 - t2 * dy;\n    if (e1x * e1x + e1y * e1y <= tolerance2 && e2x * e2x + e2y * e2y <= tolerance2 || depth >= 16) {\n      this.lineTo(x3, y3);\n      return;\n    }\n    const a = (x0 + x1) / 2, b = (y0 + y1) / 2, c = (x1 + x2) / 2, d = (y1 + y2) / 2;\n    const e = (x2 + x3) / 2, f = (y2 + y3) / 2, g = (a + c) / 2, h = (b + d) / 2;\n    const i = (c + e) / 2, j = (d + f) / 2, k = (g + i) / 2, l = (h + j) / 2;\n    this.cubic(x0, y0, a, b, g, h, k, l, depth + 1);\n    this.cubic(k, l, i, j, e, f, x3, y3, depth + 1);\n  }\n}\nfunction parseStrokeColor(value) {\n  const m = value.match(/^rgba?\\(\\s*([\\d.]+)\\s*,\\s*([\\d.]+)\\s*,\\s*([\\d.]+)(?:\\s*,\\s*([\\d.]+))?\\s*\\)$/);\n  if (!m) return null;\n  const values = [Number(m[1]) / 255, Number(m[2]) / 255, Number(m[3]) / 255, m[4] === void 0 ? 1 : Number(m[4])];\n  return values.every((v) => Number.isFinite(v) && v >= 0 && v <= 1) ? values : null;\n}\nconst VERTEX = `#version 300 es\nprecision highp float;\nlayout(location=0) in vec4 segment;\nlayout(location=1) in vec2 caps;\nuniform vec2 viewportSize;\nuniform vec2 scale;\nuniform float width;\nout vec2 local;\nflat out float segmentLength;\nflat out float radius;\nflat out vec2 endCaps;\nvoid main() {\n  vec2 a = segment.xy * scale, b = segment.zw * scale;\n  vec2 delta = b-a;\n  segmentLength = max(length(delta), 0.000001);\n  vec2 tangent = delta / segmentLength;\n  vec2 normal = vec2(-tangent.y, tangent.x);\n  radius = 0.5 * width * scale.x * scale.y * length(segment.zw-segment.xy) / segmentLength;\n  float margin = radius + 1.0;\n  // Two triangles per segment, generated without a second vertex buffer.\n  vec2 corners[6] = vec2[6](vec2(0,-1),vec2(1,-1),vec2(0,1),vec2(0,1),vec2(1,-1),vec2(1,1));\n  vec2 corner = corners[gl_VertexID];\n  local = vec2(mix(-margin, segmentLength+margin, corner.x), corner.y * margin);\n  vec2 pixel = a + tangent * local.x + normal * local.y;\n  gl_Position = vec4(pixel.x/viewportSize.x*2.0-1.0, 1.0-pixel.y/viewportSize.y*2.0, 0, 1);\n  endCaps = caps;\n}`;\nconst FRAGMENT = `#version 300 es\nprecision highp float;\nin vec2 local;\nflat in float segmentLength;\nflat in float radius;\nflat in vec2 endCaps;\nuniform vec4 color;\nout vec4 outputColor;\nvoid main() {\n  vec2 nearest = vec2(clamp(local.x, 0.0, segmentLength), 0);\n  float distance = length(local-nearest)-radius;\n  if (endCaps.x > 0.5) distance = max(distance, -local.x);\n  if (endCaps.y > 0.5) distance = max(distance, local.x-segmentLength);\n  float coverage = clamp(0.5-distance, 0.0, 1.0);\n  float alpha = color.a * coverage;\n  outputColor = vec4(color.rgb * alpha, alpha);\n}`;\nfunction createWebGLContourContext(canvas, onContextLost) {\n  const gl = canvas.getContext(\"webgl2\", {\n    alpha: true,\n    premultipliedAlpha: true,\n    antialias: false,\n    depth: false,\n    stencil: false,\n    preserveDrawingBuffer: false\n  });\n  if (!gl) return null;\n  let program = null;\n  let buffer = null;\n  let vao = null;\n  const shaders = [];\n  const events = canvas;\n  const lost = () => onContextLost?.();\n  const releaseContext = gl.getExtension(\"WEBGL_lose_context\");\n  const release = () => {\n    events.removeEventListener?.(\"webglcontextlost\", lost);\n    if (buffer) gl.deleteBuffer(buffer);\n    if (vao) gl.deleteVertexArray(vao);\n    if (program) gl.deleteProgram(program);\n    for (const shader of shaders) gl.deleteShader(shader);\n    buffer = null;\n    vao = null;\n    program = null;\n    shaders.length = 0;\n    releaseContext?.loseContext();\n  };\n  try {\n    const compile = (type, source) => {\n      const shader = gl.createShader(type);\n      if (!shader) throw new Error(\"WebGL shader allocation failed\");\n      shaders.push(shader);\n      gl.shaderSource(shader, source);\n      gl.compileShader(shader);\n      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(\"Contour shader: \" + gl.getShaderInfoLog(shader));\n      return shader;\n    };\n    const vs = compile(gl.VERTEX_SHADER, VERTEX), fs = compile(gl.FRAGMENT_SHADER, FRAGMENT);\n    program = gl.createProgram();\n    buffer = gl.createBuffer();\n    vao = gl.createVertexArray();\n    if (!program || !buffer || !vao) throw new Error(\"WebGL allocation failed\");\n    gl.attachShader(program, vs);\n    gl.attachShader(program, fs);\n    gl.linkProgram(program);\n    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(\"Contour shader link: \" + gl.getProgramInfoLog(program));\n    gl.useProgram(program);\n    gl.bindVertexArray(vao);\n    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);\n    gl.enableVertexAttribArray(0);\n    gl.vertexAttribPointer(0, 4, gl.FLOAT, false, STRIDE * 4, 0);\n    gl.vertexAttribDivisor(0, 1);\n    gl.enableVertexAttribArray(1);\n    gl.vertexAttribPointer(1, 2, gl.FLOAT, false, STRIDE * 4, 16);\n    gl.vertexAttribDivisor(1, 1);\n    gl.disable(gl.DEPTH_TEST);\n    gl.disable(gl.CULL_FACE);\n    gl.disable(gl.DITHER);\n    gl.enable(gl.BLEND);\n    gl.blendEquation(gl.MAX);\n    gl.blendFunc(gl.ONE, gl.ONE);\n    const viewport = gl.getUniformLocation(program, \"viewportSize\");\n    const scaling = gl.getUniformLocation(program, \"scale\");\n    const color = gl.getUniformLocation(program, \"color\");\n    const width = gl.getUniformLocation(program, \"width\");\n    const segments = new StrokeSegments();\n    let sx = 1, sy = 1, capacity = 0, disposed = false;\n    const context = {\n      strokeStyle: \"rgba(16,17,16,0.16)\",\n      lineWidth: 1,\n      lineJoin: \"round\",\n      setTransform(a, b, c, d, e, f) {\n        if (b !== 0 || c !== 0 || e !== 0 || f !== 0 || a <= 0 || d <= 0) throw new Error(\"Unsupported contour transform\");\n        sx = a;\n        sy = d;\n        segments.tolerance = CURVE_TOLERANCE_PX / Math.max(sx, sy);\n      },\n      clearRect() {\n        if (disposed || gl.isContextLost()) throw new Error(\"Contour WebGL context lost\");\n        gl.viewport(0, 0, canvas.width, canvas.height);\n        gl.clearColor(0, 0, 0, 0);\n        gl.clear(gl.COLOR_BUFFER_BIT);\n      },\n      beginPath: () => segments.reset(),\n      moveTo: (x, y) => segments.moveTo(x, y),\n      lineTo: (x, y) => segments.lineTo(x, y),\n      bezierCurveTo: (a, b, c, d, e, f) => segments.bezierCurveTo(a, b, c, d, e, f),\n      closePath: () => segments.closePath(),\n      stroke() {\n        const rgba = parseStrokeColor(context.strokeStyle);\n        if (!rgba) throw new Error(\"Unsupported contour stroke color\");\n        if (segments.used === 0) {\n          gl.flush();\n          return;\n        }\n        gl.uniform2f(viewport, canvas.width, canvas.height);\n        gl.uniform2f(scaling, sx, sy);\n        gl.uniform4fv(color, rgba);\n        gl.uniform1f(width, context.lineWidth);\n        if (capacity < segments.data.byteLength) {\n          capacity = segments.data.byteLength;\n          gl.bufferData(gl.ARRAY_BUFFER, capacity, gl.STREAM_DRAW);\n        }\n        gl.bufferSubData(gl.ARRAY_BUFFER, 0, segments.data, 0, segments.used);\n        gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, segments.used / STRIDE);\n        gl.flush();\n      },\n      dispose() {\n        if (disposed) return;\n        disposed = true;\n        segments.data = new Float32Array(0);\n        segments.used = 0;\n        release();\n      }\n    };\n    events.addEventListener?.(\"webglcontextlost\", lost);\n    return context;\n  } catch (error) {\n    release();\n    throw error;\n  }\n}\n\nself.onmessage = ({data}) => {\n  try {\n    if (data.type === 'init') {\n      if (canvas !== null) throw new Error('duplicate worker init')\n      canvas = data.canvas; contourSeed = data.seed\n      painter = createWebGLContourContext(canvas, () => self.postMessage({type:'error',message:'WebGL context lost'}))\n      rasterizer = painter ? 'worker-webgl2' : 'worker-canvas2d'\n      if (!painter) painter = canvas.getContext('2d', {willReadFrequently:true})\n      if (!painter) throw new Error('worker canvas unavailable')\n      contourLineCv = {getContext:()=>painter, get width(){return canvas.width},get height(){return canvas.height}}\n      self.postMessage({type:'initialized',rasterizer})\n    } else if (data.type === 'frame') {\n      if (!canvas || !painter) throw new Error('worker not initialized')\n      const {w,h,dpr,phase,geometry,color,seq}=data\n      if (![w,h,dpr,phase,seq].every(Number.isFinite) || w<1 || h<1 || dpr<=0 || dpr>2\n        || Math.round(w*dpr)*Math.round(h*dpr)>8000000 || !/^#[0-9a-f]{8}$/i.test(color)) throw new Error('invalid frame')\n      const resized = !contourGeom || contourGeom.w!==w || contourGeom.h!==h\n      if (resized) contourBuild(w,h)\n      const width=Math.round(w*dpr),height=Math.round(h*dpr)\n      if(canvas.width!==width)canvas.width=width\n      if(canvas.height!==height)canvas.height=height\n      const c=color.slice(1)\n      stroke=`rgba(${parseInt(c.slice(0,2),16)},${parseInt(c.slice(2,4),16)},${parseInt(c.slice(4,6),16)},${parseInt(c.slice(6,8),16)/255})`\n      if(geometry || resized)contourExtract(phase)\n      painter.setTransform(1,0,0,1,0,0)\n      contourDrawLines()\n      self.postMessage({type:'painted',seq,rasterizer})\n    } else if (data.type === 'dispose') {\n      if(painter && painter.dispose)painter.dispose()\n      contourField=null;contourPaths=[];painter=null;canvas=null\n      self.close()\n    }\n  } catch(error) { self.postMessage({type:'error',message:String(error.message || error)}) }\n}\nself.postMessage({type:'ready'})\n"
+    /* END GENERATED CONTOUR WORKER */
+    const onContourVisibility = () => {
+      if (document.hidden && contourWorker) contourWorker.pending = null
+      if (!document.hidden && contourWrap) contourRefresh(true)
+      contourSwitchSig = ''
+      contourApplySwitches()
     }
-    const readBgImageMask = () => {
-      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(BG_IMAGE_MASK_KEY) : null
-      if (raw === null || raw === '') return BG_IMAGE_MASK_DEFAULT
-      const value = Number(raw)
-      if (!Number.isFinite(value)) return BG_IMAGE_MASK_DEFAULT
-      return Math.min(BG_IMAGE_MASK_MAX, Math.max(BG_IMAGE_MASK_MIN, Math.round(value)))
+    if (typeof document !== 'undefined' && document.addEventListener) {
+      document.addEventListener('visibilitychange', onContourVisibility)
+      ctx.effect(() => () => document.removeEventListener('visibilitychange', onContourVisibility))
     }
-    const readBgImageFit = () => {
-      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(BG_IMAGE_FIT_KEY) : null
-      return BG_IMAGE_FIT_OPTIONS.indexOf(raw) !== -1 ? raw : 'cover'
-    }
-    const syncBgImageActiveClass = () => {
-      if (typeof document === 'undefined' || document.body === null) return
-      const on = isEnabled() && isBgImageOn() && readBgImageUrl() !== ''
-      if (on) document.body.classList.add(BG_ACTIVE_CLASS)
-      else document.body.classList.remove(BG_ACTIVE_CLASS)
-      /* Also set the transparency inline on the concrete layout containers.
-         This keeps the sidebar and other columns transparent even if a hover /
-         quietBars / class-toggling rule would otherwise re-opaque them. */
-      const transparentSelectors = [
-        '[class$="_sidebarCol"]',
-        '[class$="_sidebarCol"] [class$="_root"]',
-        '[class$="_centerCol"]',
-        '[class$="_detailsCol"]',
-        '[class$="_detailsCol"] [class$="_root"]',
-        '[data-phase]',
-      ]
-      for (const selector of transparentSelectors) {
-        document.querySelectorAll(selector).forEach((el) => {
-          if (on) el.style.backgroundColor = 'transparent'
-          else el.style.backgroundColor = ''
-        })
-      }
-    }
-
-    /* ---------- navigation overlay background image (independent layer) ------
-       An optional second image layer that covers only the left navigation /
-       sidebar column (sidebarCol). When disabled it is not mounted at all, so the
-       global full-page image shows through the (already transparent) sidebar.
-       When enabled it paints above the global image inside the sidebar and has
-       its own opacity + scrim controls so the "New Session / Settings" labels
-       remain readable. */
-    const NAV_BG_IMAGE_ON_KEY = 'dsh-theme-endfield-nav-bg-image-on'
-    const NAV_BG_IMAGE_URL_KEY = 'dsh-theme-endfield-nav-bg-image-url'
-    const NAV_BG_IMAGE_OPACITY_KEY = 'dsh-theme-endfield-nav-bg-image-opacity'
-    const NAV_BG_IMAGE_MASK_KEY = 'dsh-theme-endfield-nav-bg-image-mask'
-    const NAV_BG_IMAGE_FIT_KEY = 'dsh-theme-endfield-nav-bg-image-fit'
-    const NAV_BG_IMAGE_OPACITY_DEFAULT = 100
-    const NAV_BG_IMAGE_OPACITY_MIN = 0
-    const NAV_BG_IMAGE_OPACITY_MAX = 100
-    const NAV_BG_IMAGE_MASK_DEFAULT = 65
-    const NAV_BG_IMAGE_MASK_MIN = 0
-    const NAV_BG_IMAGE_MASK_MAX = 90
-    const NAV_BG_IMAGE_FIT_OPTIONS = ['cover', 'contain']
-    const isNavBgImageOn = () => (typeof localStorage !== 'undefined' && localStorage.getItem(NAV_BG_IMAGE_ON_KEY)) === '1'
-    const readNavBgImageUrl = () => {
-      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(NAV_BG_IMAGE_URL_KEY) : null
-      return typeof raw === 'string' ? raw.trim() : ''
-    }
-    const readNavBgImageOpacity = () => {
-      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(NAV_BG_IMAGE_OPACITY_KEY) : null
-      if (raw === null || raw === '') return NAV_BG_IMAGE_OPACITY_DEFAULT
-      const value = Number(raw)
-      if (!Number.isFinite(value)) return NAV_BG_IMAGE_OPACITY_DEFAULT
-      return Math.min(NAV_BG_IMAGE_OPACITY_MAX, Math.max(NAV_BG_IMAGE_OPACITY_MIN, Math.round(value)))
-    }
-    const readNavBgImageMask = () => {
-      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(NAV_BG_IMAGE_MASK_KEY) : null
-      if (raw === null || raw === '') return NAV_BG_IMAGE_MASK_DEFAULT
-      const value = Number(raw)
-      if (!Number.isFinite(value)) return NAV_BG_IMAGE_MASK_DEFAULT
-      return Math.min(NAV_BG_IMAGE_MASK_MAX, Math.max(NAV_BG_IMAGE_MASK_MIN, Math.round(value)))
-    }
-    const readNavBgImageFit = () => {
-      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(NAV_BG_IMAGE_FIT_KEY) : null
-      return NAV_BG_IMAGE_FIT_OPTIONS.indexOf(raw) !== -1 ? raw : 'cover'
-    }
-
-    let bgImageWrap = null
-    let bgImageHost = null
-
-    const bgImageTeardown = () => {
-      if (bgImageWrap !== null && bgImageWrap.parentNode) bgImageWrap.parentNode.removeChild(bgImageWrap)
-      bgImageWrap = null
-      bgImageHost = null
-    }
-    /* CSSOM is used for the dynamic parts (image URL, fit, mask) so the stylesheet
-       only has to define the geometry and the mount-time guards. The wrapper carries
-       no text, so the same translation-proofing as the wordmark is unnecessary; it
-       is aria-hidden because it is decorative. */
-    const applyBgImageStyles = () => {
-      if (bgImageWrap === null) return
-      const url = readBgImageUrl()
-      const mask = readBgImageMask()
-      const fit = readBgImageFit()
-      /* Only touch the DOM when a value actually changed: this runs on every page
-         mutation through the observer, so the common path must be a string compare,
-         not a layout/style write. */
-      const nextImage = url !== '' ? `url("${url}")` : 'none'
-      if (bgImageWrap.style.backgroundImage !== nextImage) bgImageWrap.style.backgroundImage = nextImage
-      const nextMask = mask + '%'
-      if (bgImageWrap.style.getPropertyValue('--edge-bg-mask') !== nextMask) bgImageWrap.style.setProperty('--edge-bg-mask', nextMask)
-      if (bgImageWrap.style.getPropertyValue('--edge-bg-fit') !== fit) bgImageWrap.style.setProperty('--edge-bg-fit', fit)
-    }
-
-    /** Build/refresh/remove the global (whole-page) background layer. */
-    const syncBgImage = () => {
-      syncBgImageActiveClass()
-      const on = isEnabled() && isBgImageOn() && readBgImageUrl() !== ''
-      if (!on) {
-        if (bgImageWrap !== null) bgImageTeardown()
-        return
-      }
-      const attached = bgImageWrap !== null && bgImageHost !== null
-        && bgImageWrap.parentNode === bgImageHost && bgImageHost.isConnected
-      if (attached) {
-        applyBgImageStyles()
-        return
-      }
-      const host = findAppFrame()
-      if (host === null) {
-        // Frame not rendered yet; a later mutation will retry through the hooks.
-        if (bgImageWrap !== null) bgImageTeardown()
-        return
-      }
-      if (bgImageWrap !== null && bgImageHost !== host) bgImageTeardown()
-      if (bgImageWrap === null) {
-        const wrap = document.createElement('div')
-        wrap.setAttribute('data-endfield-bg-image', '')
-        wrap.setAttribute('aria-hidden', 'true')
-        /* First child keeps the image at the bottom of the frame's paint order;
-           if the contour sheet is also mounted, the image sits beneath the
-           contour lines rather than covering them. */
-        if (host.firstChild) host.insertBefore(wrap, host.firstChild)
-        else host.appendChild(wrap)
-        bgImageWrap = wrap
-        bgImageHost = host
-      }
-      applyBgImageStyles()
-    }
-
-    bgImageSyncHook = syncBgImage
-
-    let navBgImageWrap = null
-    let navBgImageHost = null
-
-    const findNavBgImageHost = () => {
-      if (typeof document === 'undefined') return null
-      return document.querySelector('[class$="_sidebarCol"]') || document.querySelector('[class*="_sidebarCol"]')
-    }
-
-    const navBgImageTeardown = () => {
-      if (navBgImageWrap !== null && navBgImageWrap.parentNode) navBgImageWrap.parentNode.removeChild(navBgImageWrap)
-      navBgImageWrap = null
-      navBgImageHost = null
-    }
-
-    const applyNavBgImageStyles = () => {
-      if (navBgImageWrap === null) return
-      const url = readNavBgImageUrl()
-      const opacity = readNavBgImageOpacity()
-      const mask = readNavBgImageMask()
-      const fit = readNavBgImageFit()
-      const nextImage = url !== '' ? `url("${url}")` : 'none'
-      if (navBgImageWrap.style.backgroundImage !== nextImage) navBgImageWrap.style.backgroundImage = nextImage
-      const nextOpacity = String(opacity / 100)
-      if (navBgImageWrap.style.opacity !== nextOpacity) navBgImageWrap.style.opacity = nextOpacity
-      const nextMask = mask + '%'
-      if (navBgImageWrap.style.getPropertyValue('--edge-nav-mask') !== nextMask) navBgImageWrap.style.setProperty('--edge-nav-mask', nextMask)
-      if (navBgImageWrap.style.getPropertyValue('--edge-nav-fit') !== fit) navBgImageWrap.style.setProperty('--edge-nav-fit', fit)
-    }
-
-    /** Build/refresh/remove the navigation overlay background layer. */
-    const syncNavBgImage = () => {
-      const on = isEnabled() && isNavBgImageOn() && readNavBgImageUrl() !== ''
-      if (!on) {
-        if (navBgImageWrap !== null) navBgImageTeardown()
-        return
-      }
-      const attached = navBgImageWrap !== null && navBgImageHost !== null
-        && navBgImageWrap.parentNode === navBgImageHost && navBgImageHost.isConnected
-      if (attached) {
-        applyNavBgImageStyles()
-        return
-      }
-      const host = findNavBgImageHost()
-      if (host === null) {
-        if (navBgImageWrap !== null) navBgImageTeardown()
-        return
-      }
-      if (navBgImageWrap !== null && navBgImageHost !== host) navBgImageTeardown()
-      if (navBgImageWrap === null) {
-        const wrap = document.createElement('div')
-        wrap.setAttribute('data-endfield-nav-bg-image', '')
-        wrap.setAttribute('aria-hidden', 'true')
-        if (host.firstChild) host.insertBefore(wrap, host.firstChild)
-        else host.appendChild(wrap)
-        navBgImageWrap = wrap
-        navBgImageHost = host
-      }
-      applyNavBgImageStyles()
-    }
-
-    navBgImageSyncHook = syncNavBgImage
 
     /* ---------- boot loading screen (settings-toggleable, default OFF) ----------
        Recreates the Endfield launcher boot screen: a full-viewport black plate with
@@ -1809,7 +3428,7 @@ function apply(ctx) {
        viewport size. */
     const LOADER_KEY = 'dsh-theme-endfield-loader'
     // Default OFF (=== '1' rather than !== '0'): opt-in, per the request.
-    const isLoaderOn = () => (typeof localStorage !== 'undefined' && localStorage.getItem(LOADER_KEY)) === '1'
+    const isLoaderOn = () => prefsGet(LOADER_KEY) === '1'
     let loaderEl = null
     let loaderRaf = null
     let loaderTick = null
@@ -1859,6 +3478,23 @@ function apply(ctx) {
 
        `loaderFuse` is the last line of defence: a single timeout that force-finishes
        the plate even if both clocks stop, so the app can never stay covered. */
+    /* 启动加载动画音. The sound is played by the HOST (lib/audio.js) — the page
+       only reports that the plate started, so volume, debounce, the custom-sound
+       directory and the slot switch all stay in one place. `audioBootSent` makes
+       this exactly once per page load, which is the loader's own contract: the
+       预览 button re-runs the plate deliberately and must not re-ring a boot
+       sound, and neither must a toggle-on. */
+    let audioBootSent = false
+    const playBootChime = () => {
+      if (audioBootSent) return
+      audioBootSent = true
+      // Master switch, slot switch and volume are the host's call; the page only
+      // avoids the round-trip when the feature is switched off outright.
+      if (typeof isAudioOn === 'function' && !isAudioOn()) return
+      try {
+        previewSlot('boot').catch(() => { /* host bridge absent: boot stays silent */ })
+      } catch (e) { /* keep going */ }
+    }
     const runLoader = () => {
       // The plate is themed BY this theme: with the master switch off its
       // stylesheet is gone and the plate would render as stray unstyled text in
@@ -1878,6 +3514,7 @@ function apply(ctx) {
         return
       }
       loaderDone = true
+      playBootChime()
       contourPauseForLoader()
 
       const el = document.createElement('div')
@@ -2085,6 +3722,35 @@ function apply(ctx) {
       }
     }
 
+    /* The first authoritative settings section can land AFTER apply() has run (the
+       Host serves it over the wire), and until it does every prefsGet falls back
+       to the schema default — for the loader that default is '0' ("default off"),
+       so the boot-time call in apply() is a silent no-op and the plate never plays
+       however the user has it stored. That is the whole "the startup animation
+       stopped appearing" symptom, and it is invisible to any test whose fixture
+       scope answers 'ready' from the first synchronous read.
+
+       This closes the window. The store calls it once, on the first real section
+       of the page load — which IS the "once per page load" moment the boot-time
+       call is trying to hit — and the guards below keep every other case out:
+         - a section that changes LATER (another window, a reverting host) never
+           reaches here at all, because the store fires this hook only once;
+         - a plate already played or mid-play is left alone;
+         - a user who has answered this question in-session (the settings toggle)
+           outranks a section that was still in flight when they answered it. What
+           enforces that is prefsGetValue overlaying prefsLocalEdited, so
+           isLoaderOn() already reads the session value; the prefsEdited check
+           below merely pins the same intent at this call site instead of leaning
+           on the overlay's internals. The plain 预览 button needs neither guard:
+           runLoader() sets loaderDone the instant it starts. */
+    onPrefsSettled = () => {
+      if (loaderDone || loaderEl !== null) return
+      if (prefsEdited.has('loader')) return
+      if (!isEnabled()) return
+      if (!isLoaderOn()) return
+      runLoader()
+    }
+
     /* ---------- 雷霆大字 (娱乐模式, default OFF) ----------
        A task-boundary announcement: when a turn starts, 「任务开始」 slams into the
        middle of the screen in heavy white type; when it ends, 「任务完成」 does the
@@ -2117,9 +3783,9 @@ function apply(ctx) {
     // Hold time, per the request: visible for 3s, then gone.
     const THUNDER_MS = 3000
     // Default OFF (=== '1' rather than !== '0'): opt-in, like the boot animation.
-    const isThunderOn = () => (typeof localStorage !== 'undefined' && localStorage.getItem(THUNDER_KEY)) === '1'
+    const isThunderOn = () => prefsGet(THUNDER_KEY) === '1'
     // Default OFF for the same reason, and read independently of the parent switch.
-    const isThunderAnimOn = () => (typeof localStorage !== 'undefined' && localStorage.getItem(THUNDER_ANIM_KEY)) === '1'
+    const isThunderAnimOn = () => prefsGet(THUNDER_ANIM_KEY) === '1'
     /* The OS preference still wins over an enabled animation switch, exactly as
        contourWantsAnim() does for the contour sheet. Checked live rather than
        cached, so changing the OS setting takes effect on the next announcement. */
@@ -2212,6 +3878,12 @@ function apply(ctx) {
     let thunderUnsubList = null
     let thunderUnsubSession = null
     let thunderRebindTimer = null
+    /* Retry budget for thunderRebind, bounded like every other retry in this
+       file (rebindPrefs 40, settle watch 20): a permanently absent sessions
+       service must not leave a 120 ms poll running for the life of the page.
+       A settings change re-runs syncThunder -> thunderRebind, which restarts
+       the budget. */
+    let thunderRebindAttempts = 0
     let thunderWatchedId = null
     // null = nothing readable observed yet, so the next value is a baseline.
     let thunderLastRunning = null
@@ -2240,6 +3912,39 @@ function apply(ctx) {
       try { unsub = sessions.list.subscribe(() => { thunderRebind() }) } catch (e) { unsub = null }
       thunderUnsubList = (typeof unsub === 'function') ? unsub : null
     }
+    /* WHICH session the user is looking at.
+       The list snapshot used to carry a `current` session id, and this file read it.
+       Newer Controllers deliberately moved view selection out of themselves — the
+       list state is { ids, byId, phase, projectionsBySession } and the contract says
+       outright that "view selection remains outside the Controller" — so `current`
+       is simply gone there. The old read therefore resolved to undefined, the watch
+       bailed out, and the announcement went permanently silent: the whole feature
+       looked switched on in settings while nothing ever fired.
+       The runtime's own answer is the `mainView` retention count. The workspace main
+       view retains whatever it displays with
+       `sessions.retain(target, { source: 'mainView' })`, and every shipped package
+       that needs "the current session" resolves it with exactly this scan
+       (ui-session, ui-layout, ui-workspace, ui-settings-general, ui-cordis,
+       ui-agent-preset, ui-open-in-app). Selection changes reach us as ordinary list
+       publishes — the Controller copies the retention record onto the row
+       (`publishRetention` -> `list.set`), so switching sessions re-runs this scan
+       through the subscription below, with no polling of our own.
+       `snap.current` is kept as a fallback so a host that still publishes it keeps
+       working; both shapes are covered by test/thunder-edges.test.js. */
+    const thunderCurrentId = (snap) => {
+      const byId = snap.byId
+      if (byId !== null && typeof byId === 'object') {
+        const ids = Object.keys(byId)
+        for (let i = 0; i < ids.length; i += 1) {
+          const row = byId[ids[i]]
+          if (row === null || typeof row !== 'object') continue
+          const kept = row.retainedBy
+          if (kept !== null && typeof kept === 'object' && (kept.mainView ?? 0) > 0) return ids[i]
+        }
+      }
+      const legacy = snap.current
+      return (typeof legacy === 'string' || typeof legacy === 'number') ? legacy : undefined
+    }
     /* Follow the CURRENT session. `sessions.list` publishes the selection, and the
        runtime's own list subscriber (registered at construction, so it runs first)
        stages the session that makes binding() resolve. A miss here is therefore
@@ -2251,23 +3956,47 @@ function apply(ctx) {
       if (thunderRebindTimer !== null && typeof clearTimeout === 'function') clearTimeout(thunderRebindTimer)
       thunderRebindTimer = null
       /* Service not there yet: keep retrying rather than giving up for good, since
-         the only reason to be here is that the feature is switched on. */
+         the only reason to be here is that the feature is switched on — but only
+         within the budget above. */
       if (sessions === undefined) {
+        if (thunderRebindAttempts >= 100) {
+          dbg('thunder rebind gave up: no sessions service after', thunderRebindAttempts, 'tries')
+          return
+        }
+        thunderRebindAttempts += 1
         if (typeof setTimeout === 'function') thunderRebindTimer = setTimeout(thunderRebind, 120)
         return
       }
       // The list subscription may have been skipped earlier (no service then), so
       // attach it as soon as one exists.
       thunderSubscribeList(sessions)
-      let id
+      let snap = null
       try {
-        const snap = sessions.list.getSnapshot()
-        id = (snap === null || typeof snap !== 'object') ? undefined : snap.current
+        snap = sessions.list.getSnapshot()
       } catch (e) {
+        // Unreadable list: leave the previous watch exactly as it is. A flaky read
+        // must not be mistaken for "the user left this session".
         return
       }
+      const id = (snap === null || typeof snap !== 'object') ? undefined : thunderCurrentId(snap)
       if (id === undefined || id === null) {
+        /* Nothing on screen to announce. This is a WAITING state rather than a
+           failure, and the difference matters: the old code treated it as final, so
+           a list that had no current session at boot never recovered. The main view
+           retains its session when it gets one, that retention lands in the list, and
+           the subscription attached above comes straight back here — so we simply
+           wait, keeping no timer. The one case that needs the timer is a list
+           subscription that could not be attached at all, because then no future
+           publish can ever reach us. */
         thunderDetach()
+        if (thunderUnsubList === null) {
+          if (thunderRebindAttempts >= 100) {
+            dbg('thunder rebind gave up: no current session and no list subscription')
+            return
+          }
+          thunderRebindAttempts += 1
+          if (typeof setTimeout === 'function') thunderRebindTimer = setTimeout(thunderRebind, 120)
+        }
         return
       }
       /* Already watching this one: skip the detach/resubscribe churn. `sessions.list`
@@ -2290,9 +4019,15 @@ function apply(ctx) {
         face = null
       }
       if (face === null || typeof face.subscribe !== 'function' || typeof face.getSnapshot !== 'function') {
+        if (thunderRebindAttempts >= 100) {
+          dbg('thunder rebind gave up: session face never became bindable for', id)
+          return
+        }
+        thunderRebindAttempts += 1
         if (typeof setTimeout === 'function') thunderRebindTimer = setTimeout(thunderRebind, 120)
         return
       }
+      thunderRebindAttempts = 0
       thunderWatchedId = id
       thunderLastRunning = thunderReadRunning(face)
       let unsub = null
@@ -2315,6 +4050,7 @@ function apply(ctx) {
     const thunderStopWatch = () => {
       if (thunderRebindTimer !== null && typeof clearTimeout === 'function') clearTimeout(thunderRebindTimer)
       thunderRebindTimer = null
+      thunderRebindAttempts = 0
       if (thunderUnsubList !== null) {
         try { thunderUnsubList() } catch (e) { /* already torn down */ }
         thunderUnsubList = null
@@ -2333,6 +4069,943 @@ function apply(ctx) {
       // thunderRebind() resolves the service itself and re-arms its own retry, so
       // there is nothing to check here — being switched on is the whole condition.
       thunderRebind()
+    }
+
+    /* ---------- 需要你回应 watcher ----------
+       A coarse poll rather than a MutationObserver. The reason is the failure mode
+       rather than the cost: an observer watching a container that the app later
+       replaces (or an anchor that renders before `document.body` exists) stops
+       delivering and cannot tell anyone, while a poll that asks "is a confirmation
+       box on screen?" keeps working through any re-render, and its only symptom is
+       up to `AUDIO_ATTENTION_POLL_MS` of latency — imperceptible for a chime.
+
+       The edge is "a box is on screen after a moment where none was". A box that
+       stays open does not re-report, so a forgotten dialog cannot beep forever; and
+       a re-render that briefly drops the node and puts it back would re-report, so
+       the poll is deliberately slower than a React remount. Whatever still slips
+       through lands on the host's per-slot debounce, which is the backstop for
+       every path. */
+    /* Detection is edge-triggered on a MutationObserver, with a slow poll as the
+       backstop. The first version polled alone at 400ms, which stacked its
+       worst-case latency on top of the ~200-400ms it takes the host to cold-start
+       the player process — the user measured the total as "a bit delayed". The
+       observer cuts the first term to roughly one animation frame; the poll stays
+       because an observer bound to a container the app later replaces would stop
+       delivering silently, and a poll cannot. Its period is deliberately longer
+       than a React remount, so a re-render that briefly drops and re-adds the node
+       cannot register as two separate boxes. */
+    const AUDIO_ATTENTION_POLL_MS = 1000
+    /* The app mutates the DOM continuously while a turn streams, so a mutation
+       cannot run the query on its own frame: it only schedules one. Coalescing on
+       the next frame keeps the check off the render path and collapses a burst of
+       mutations into a single look. */
+    let audioAttentionTimer = null
+    let audioAttentionObserver = null
+    let audioAttentionFrame = null
+    let audioAttentionKind = null
+    const audioAttentionTick = () => {
+      try {
+        const kind = detectPendingInteraction()
+        if (kind === null) {
+          audioAttentionKind = null
+          return
+        }
+        if (kind === audioAttentionKind) return
+        audioAttentionKind = kind
+        if (!isAudioOn()) return
+        reportAttention(kind)
+      } catch (e) { /* never let the watcher break the page */ }
+    }
+    /** Collapse a burst of mutations into one look on the next frame. */
+    const audioAttentionSchedule = () => {
+      if (audioAttentionFrame !== null) return
+      if (typeof requestAnimationFrame !== 'function') {
+        audioAttentionTick()
+        return
+      }
+      audioAttentionFrame = requestAnimationFrame(() => {
+        audioAttentionFrame = null
+        audioAttentionTick()
+      })
+    }
+    const syncAudioAttentionWatch = () => {
+      const wanted = isEnabled() && isAudioOn()
+      if (wanted && audioAttentionTimer === null && typeof setInterval === 'function') {
+        audioAttentionKind = null
+        audioAttentionTimer = setInterval(audioAttentionTick, AUDIO_ATTENTION_POLL_MS)
+        if (typeof MutationObserver === 'function' && typeof document !== 'undefined' && document.body) {
+          audioAttentionObserver = new MutationObserver(audioAttentionSchedule)
+          try {
+            audioAttentionObserver.observe(document.body, { childList: true, subtree: true })
+          } catch (e) {
+            audioAttentionObserver = null
+          }
+        }
+        audioAttentionTick()
+      } else if (!wanted && audioAttentionTimer !== null) {
+        stopAudioAttentionWatch()
+      }
+    }
+    const stopAudioAttentionWatch = () => {
+      if (audioAttentionTimer !== null && typeof clearInterval === 'function') clearInterval(audioAttentionTimer)
+      audioAttentionTimer = null
+      if (audioAttentionObserver !== null) {
+        try { audioAttentionObserver.disconnect() } catch (e) { /* already gone */ }
+        audioAttentionObserver = null
+      }
+      if (audioAttentionFrame !== null) {
+        if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(audioAttentionFrame)
+        audioAttentionFrame = null
+      }
+      audioAttentionKind = null
+    }
+    // Exposed so the watcher test can drive the mutation path (the observer's own
+    // callback in a browser) without a real MutationObserver.
+    module.exports.__attentionCheck = audioAttentionTick
+    module.exports.__attentionSchedule = audioAttentionSchedule
+
+    /* ---------- 顶部余额胶囊 ----------
+       A fixed capsule at the top center of the frame showing the account
+       balance AND the API's peak/off-peak pricing window, styled after the
+       Endfield HUD plate: dark pill, currency + big tnum number, a small
+       countdown to the next window edge, the elapsed-window percentage pushed
+       to the right, and the accent-yellow round badge.
+
+       WHY A HOST ROUTE. Only Host consumers can obtain the request credential
+       the account service needs, so the page cannot query the balance itself —
+       it polls /theme-endfield/balance (index.js registerBalanceBridge) and
+       renders whatever arrives. A failed or empty answer keeps the last known
+       numbers on screen instead of flashing an error state; a 60s poll keeps a
+       drifted display within a minute of the truth at the cost of one cheap
+       local request.
+
+       WHY THE PRICING WINDOW IS COMPUTED LOCALLY. No host service exposes the
+       schedule (deepseekAccount carries balance only), and the published rule
+       is fixed wall-clock: Beijing time Mon-Fri 9:00-12:00 and 14:00-18:00 are
+       PEAK (高峰), everything else — evenings, nights, weekends, statutory
+       holidays — is OFF-PEAK (低谷) at half price. The holiday half of that
+       sentence needs a calendar, so this file carries one transcribed from the
+       State Council notices (BALANCE_HOLIDAY_NOTICES) instead of guessing; the
+       capsule says "已过/剩余", not "what you will pay". A 1s tick keeps the
+       countdown honest to the second.
+
+       WHY RAW DOM, NOT A SLOT COMPONENT. Every other floating surface in this
+       theme (thunder plate, watermark) is a plain fixed element owned by
+       lifecycle code this file already has — mount/unmount/sync/reconcile —
+       and a slot registration would hand the frame's React tree a component
+       that must survive re-roots this theme does not control. The capsule is
+       static once painted (only text nodes change), so raw DOM loses nothing.
+       It is NOT clickable and NOT interactive: pointer-events:none, like the
+       thunder plate, so it can never eat a click aimed at the header behind it. */
+    const BALANCE_KEY = 'balanceCapsule'
+    const isBalanceCapsuleOn = () => prefsGet(BALANCE_KEY) === '1'
+    /* What the credits mode's RIGHT-hand percentage slot reads: 已用xx% (the
+       plugin's own badge reading) or 剩余xx%. Anything other than 'remaining'
+       reads as 'used' — the preference is a two-literal choice, stored as
+       exactly one of them, and the tolerant default mirrors how
+       readContourRenderer treats its own select. */
+    const CREDIT_DISPLAY_KEY = 'creditDisplay'
+    const readCreditDisplay = () => (prefsGet(CREDIT_DISPLAY_KEY) === 'used' ? 'used' : 'remaining')
+    let balanceEl = null
+    let balanceTimer = null
+    let balancePollTimer = null
+    let balanceBusy = false
+    // Non-zero while the brand pose is up: the wall-clock moment it was raised.
+    let balanceBootAt = 0
+    // Set by the first completed fetch, answer or not.
+    let balanceBootAnswered = false
+    /* Channel-credit state. `provider` is the provider the LAST successful
+       directory read named (null = DeepSeek / unknown -> wallet display);
+       `creditsBusy` guards the usage.badge round-trip the way balanceBusy
+       guards the wallet fetch; `creditsUnsub` detaches the model-directory
+       subscription on destroy. */
+    let creditProvider = null
+    let creditProviderResolved = false
+    let creditsBusy = false
+    let creditsUnsub = null
+    let creditsRebindTimer = null
+    let creditsRebindAttempts = 0
+    /* Rate limiting the usage.badge calls. Two refresh paths feed creditsApply
+       — the shared 60s poll and every model-directory publish — and without a
+       client-side floor both would fire an RPC each time. The host badge cache
+       (TTL 120s) would absorb some of it, but the plugin's own badge polls at
+       the same endpoint too, so the theme keeps its own 5-minute floor: a
+       credit number is a slowly-moving quantity and the capsule is a glance.
+       A channel SWITCH bypasses the floor (the number must follow the switch
+       immediately); a failed fetch retries after 30s instead of the full
+       floor, because failure answers are cached by the host for only 15s. */
+    const CREDITS_MIN_INTERVAL_MS = 5 * 60 * 1000
+    const CREDITS_FAILURE_RETRY_MS = 30000
+    let creditLastFetchAt = 0
+    // The directory store currently subscribed; a new session hands us a new
+    // store, which is what re-arms the watch in creditsRefresh.
+    let creditsWatchedStore = null
+
+    /* Whether the brand pose plays at all. Reduced motion gets the settled
+       capsule immediately — the animation is decoration, the balance is not. */
+    const isBalanceBootAnimated = () =>
+      typeof window !== 'undefined'
+      && typeof window.matchMedia === 'function'
+      && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+    const destroyBalanceCapsule = () => {
+      if (balanceTimer !== null && typeof clearInterval === 'function') {
+        clearInterval(balanceTimer)
+        balanceTimer = null
+      }
+      if (balancePollTimer !== null && typeof clearInterval === 'function') {
+        clearInterval(balancePollTimer)
+        balancePollTimer = null
+      }
+      // Detach the model-directory watch, too: a stale subscriber would keep
+      // firing creditsRefresh into a capsule that no longer exists.
+      if (typeof creditsUnsub === 'function') {
+        try { creditsUnsub() } catch (e) { /* store already gone */ }
+      }
+      creditsUnsub = null
+      if (creditsRebindTimer !== null && typeof clearTimeout === 'function') {
+        clearTimeout(creditsRebindTimer)
+        creditsRebindTimer = null
+      }
+      creditProvider = null
+      creditProviderResolved = false
+      creditsRebindAttempts = 0
+      creditsWatchedStore = null
+      if (balanceEl !== null && balanceEl.parentNode) {
+        try { balanceEl.parentNode.removeChild(balanceEl) } catch (e) { /* already gone */ }
+      }
+      balanceEl = null
+      balanceBootAt = 0
+      balanceBootAnswered = false
+    }
+
+    /* One wallet pair -> the capsule's three text values. The balance arrives as
+       strings ("12.34"), so the integer part is sliced out of the text rather
+       than parsed: parsing would round a partial yuan amount into a lie about
+       the user's money, and the screenshot style wants the big integer anyway.
+       The fraction is capped at TWO digits — the source can carry more (or the
+       bonus split can produce long tails), and a capsule is a glanceable read,
+       not a ledger: it shows 29.35, not 29.354285714285714. */
+    const balancePickWallet = (wallets) => {
+      if (!Array.isArray(wallets) || wallets.length === 0) return null
+      const preferred = wallets.find((w) => w && w.currency === 'CNY') || wallets[0]
+      const raw = String((preferred && preferred.balance) || '0')
+      const num = Number.parseFloat(raw)
+      if (!Number.isFinite(num)) return null
+      const [intPart, fracPart = ''] = raw.split('.')
+      return {
+        currency: (preferred && preferred.currency) || '',
+        int: intPart || '0',
+        frac: fracPart.slice(0, 2),
+      }
+    }
+
+    const balancePaint = (data) => {
+      if (balanceEl === null || typeof document === 'undefined') return
+      const setText = (attr, text) => {
+        const node = balanceEl.querySelector('[' + attr + ']')
+        if (node) node.textContent = text
+      }
+      setText('data-endfield-balance-int', data.int)
+      setText('data-endfield-balance-frac', data.frac === '' ? '' : '.' + data.frac)
+      setText('data-endfield-balance-currency', data.currency === 'USD' ? '$' : '¥')
+    }
+
+    /* ---------- 渠道额度渲染 (dsh-codearts-auth / jet-hub) ----------
+       Two display modes share one capsule. The wallet read above is the
+       DeepSeek mode; when the session's model directory names a jet-hub
+       provider, the money group swaps to that channel's remaining credits.
+
+       Numbers mirror the plugin's own badge formatting: credits are integers
+       or two decimals, token-quantity units compact past 1e3/1e6 (12.34K /
+       1.20M), and the unit tag reads 积分 or Token. A FAILED answer paints --
+       rather than 0 — a zero would read as "out of quota" and that is a lie
+       the user may act on. The badge response carries `provider` back; a
+       stale reply for a channel the user already left is dropped, which is
+       the only thing keeping a channel switch and an in-flight fetch from
+       crossing wires. */
+    const creditFormatTokens = (value) => {
+      const abs = Math.abs(value)
+      if (abs >= 1e6) return (value / 1e6).toFixed(2) + 'M'
+      if (abs >= 1e3) return (value / 1e3).toFixed(2) + 'K'
+      return String(Math.round(value))
+    }
+    const creditFormatValue = (value, unit) =>
+      (unit === 'token' ? creditFormatTokens(value)
+        : (Number.isInteger(value) ? String(value) : value.toFixed(2)))
+    const creditUnitLabel = (unit) => (unit === 'token' ? 'Token' : '积分')
+
+    /* The unit tag rides the packages (the account total carries none); any
+       package's unit answers for the row. 'credits' normalizes to 'credit' so
+       one spelling owns the 积分 branch. */
+    const creditPickUnit = (packages) => {
+      if (Array.isArray(packages)) {
+        for (const pkg of packages) {
+          if (pkg && pkg.unit) return (pkg.unit === 'credits' ? 'credit' : pkg.unit)
+        }
+      }
+      return 'credit'
+    }
+
+    /* RpcCreditsBalanceAccount[] -> one glanceable number PLUS the consumption
+       ratio the right-hand dial shows in credits mode. usage.badge answers one
+       row per enabled account; the read is the FIRST account without an
+       error. Active packages carry remaining/total/used, so they are summed
+       into { total (剩余), quotaTotal (总额度), used (已用), unit } — the
+       account-level balance.total is only the fallback when no usable package
+       exists, and it carries no quota, so the dial reads no consumption from
+       it (an invented percentage would be a lie). */
+    const creditPickAccount = (accounts) => {
+      if (!Array.isArray(accounts)) return null
+      for (const account of accounts) {
+        if (!account || typeof account !== 'object' || account.error) continue
+        const bal = account.balance
+        if (!bal || typeof bal !== 'object') continue
+        if (Array.isArray(bal.packages) && bal.packages.length > 0) {
+          let total = 0
+          let quotaTotal = 0
+          let used = 0
+          let any = false
+          let unit = 'credit'
+          for (const pkg of bal.packages) {
+            if (!pkg || pkg.active !== true || !Number.isFinite(pkg.remaining)) continue
+            any = true
+            unit = pkg.unit === 'credits' ? 'credit' : pkg.unit
+            total += pkg.remaining
+            if (Number.isFinite(pkg.total)) quotaTotal += pkg.total
+            if (Number.isFinite(pkg.used)) used += pkg.used
+          }
+          if (any) return { total, quotaTotal, used, unit }
+        }
+        if (Number.isFinite(bal.total)) {
+          return { total: bal.total, quotaTotal: 0, used: 0, unit: creditPickUnit(bal.packages) }
+        }
+      }
+      return null
+    }
+
+    const creditPaint = (paint) => {
+      if (balanceEl === null || typeof document === 'undefined') return
+      const setText = (attr, text) => {
+        const node = balanceEl.querySelector('[' + attr + ']')
+        if (node) node.textContent = text
+      }
+      setText('data-endfield-credit-int', paint.int)
+      setText('data-endfield-credit-unit', paint.unitText)
+      setText('data-endfield-credit-channel', paint.channel)
+      // Consumption read for the right-hand slot in credits mode. The dial's
+      // share rides the same --endfield-balance-sweep custom property the
+      // pricing clock uses, so mode switches never re-layout the pill: the
+      // value just changes meaning. No quota (quotaTotal 0) keeps the sweep
+      // empty rather than inventing a percentage.
+      setText('data-endfield-credit-pct', paint.pctText || '')
+      // The ring sweep follows the slot's meaning: 已用xx% sweeps the consumed
+      // share, 剩余xx% sweeps the remaining share — dial and readout always
+      // tell the same story. (The wallet pricing clock early-returns in
+      // credits mode, so this property is ours to write here.)
+      if (typeof balanceEl.style?.setProperty === 'function') {
+        balanceEl.style.setProperty(
+          '--endfield-balance-sweep',
+          (Number.isFinite(paint.sweepPct) ? paint.sweepPct * 3.6 : 0) + 'deg',
+        )
+      }
+      // The two modes are mutually exclusive DOM states driven by one attribute
+      // the stylesheet keys off — no inline style writes, no per-poll churn.
+      balanceEl.setAttribute('data-endfield-credit-mode', paint.mode)
+    }
+
+    /* The capsule paints ONE mode at a time. 'wallet' keeps the DeepSeek
+       money group; 'credits' swaps in the channel read; while a jet-hub
+       provider is live but has not answered yet the capsule shows the channel
+       name with -- rather than yesterday's wallet number under a different
+       channel's name. Consumption reads need a quota: without one the pct
+       slot stays empty and the dial sweep is zeroed, never guessed. */
+    const creditPaintIdle = () => {
+      if (creditProvider === null) {
+        creditPaint({ mode: 'wallet', int: '', unitText: '', channel: '', pctText: '', usedPct: NaN, sweepPct: NaN })
+        return
+      }
+      creditPaint({
+        mode: 'credits',
+        int: '--',
+        unitText: '',
+        channel: JET_HUB_PROVIDER_LABELS[creditProvider] || creditProvider,
+        pctText: '',
+        usedPct: NaN,
+        sweepPct: NaN,
+      })
+    }
+
+    /* Fetch the badge for `provider` and paint it, unless the user has switched
+       channels in the meantime (the reply's provider echo guards the race the
+       same way the plugin's own badge does). The consumption share for the
+       right-hand dial is used/quota of the SAME account the number comes from;
+       with no quota the pct slot stays empty and the sweep zeroes.
+       RATE LIMIT. `force` (a channel switch) always fetches; the throttled
+       path keeps a per-provider floor of CREDITS_MIN_INTERVAL_MS measured from
+       the last COMPLETED fetch of that provider, so the 60s poll and the
+       directory-publish path collapse onto one actual RPC per interval. The
+       state is per-provider because switching A -> B -> A within one floor
+       must still answer the second A visit with a fetch (its own stamp is old
+       and the painted numbers belong to B). Failures re-arm at the shorter
+       CREDITS_FAILURE_RETRY_MS — the host caches failure answers for only 15s,
+       so a longer floor would just add silence after a transient error. */
+    const creditLastFetch = {}
+    const creditsApply = async (provider, force) => {
+      if (creditsBusy) return
+      let connection = null
+      try { connection = ctx.get('connection') } catch (e) { connection = null }
+      if (!connection || !connection.rpc || typeof connection.rpc.call !== 'function') return
+      if (force !== true) {
+        const last = creditLastFetch[provider] || 0
+        if (Date.now() - last < CREDITS_MIN_INTERVAL_MS) return
+      }
+      creditsBusy = true
+      let failed = false
+      try {
+        const payload = force === true ? { provider, force: true } : { provider }
+        const reply = await connection.rpc.call(JET_HUB_RPC_SCOPE, JET_HUB_RPC_CHANNEL, {
+          method: 'usage.badge',
+          payload,
+        })
+        // Stale reply: the channel moved on while this was in flight.
+        if (creditProvider !== provider) return
+        if (!reply || reply.ok !== true) throw new Error('usage.badge not ok')
+        const value = reply.value && typeof reply.value === 'object' ? reply.value : reply
+        if (value.provider !== provider) return
+        creditLastFetch[provider] = Date.now()
+        const picked = creditPickAccount(value.accounts)
+        // Consumption: 已用 / 总额度, from the summed active packages. Both
+        // bounds must be sane or the dial refuses to speak (0 quota, more used
+        // than granted, negative anything -> no invented percentage).
+        let usedPct = NaN
+        if (picked && picked.quotaTotal > 0 && picked.used >= 0
+          && picked.used <= picked.quotaTotal) {
+          usedPct = Math.min(100, Math.round((picked.used / picked.quotaTotal) * 100))
+        }
+        // Remaining share for the right-hand slot's 剩余xx% read: the same
+        // sanity bounds, mirrored — the share of quota still left.
+        let remainingPct = NaN
+        if (usedPct === usedPct) remainingPct = 100 - usedPct
+        // The RIGHT-hand slot is what the user chooses: 已用xx% (the plugin's
+        // own badge reading) or 剩余xx% (remaining share of the quota). Both
+        // come from the SAME summed account; the lead figure on the left
+        // always stays the remaining balance. The dial sweeps the SAME share
+        // the slot reads, so ring and number never disagree. 'remaining'
+        // needs a quota too — a share of nothing is not a number — so without
+        // one the slot stays empty and the sweep zeroes either way.
+        const displayUsed = readCreditDisplay() === 'used'
+        creditPaint({
+          mode: 'credits',
+          int: picked ? creditFormatValue(picked.total, picked.unit) : '--',
+          unitText: picked ? creditUnitLabel(picked.unit) : '',
+          channel: JET_HUB_PROVIDER_LABELS[provider] || provider,
+          pctText: Number.isFinite(displayUsed ? usedPct : remainingPct)
+            ? (displayUsed ? '已用' : '剩余') + (displayUsed ? usedPct : remainingPct) + '%'
+            : '',
+          usedPct,
+          sweepPct: displayUsed ? usedPct : remainingPct,
+        })
+      } catch (e) {
+        failed = true
+        // Plugin absent, not logged in, or channel down: -- is the honest read.
+        if (creditProvider === provider) {
+          creditPaint({
+            mode: 'credits',
+            int: '--',
+            unitText: '',
+            channel: JET_HUB_PROVIDER_LABELS[provider] || provider,
+            pctText: '',
+            usedPct: NaN,
+            sweepPct: NaN,
+          })
+        }
+      } finally {
+        if (failed) {
+          // Re-arm early after a failure: the host only caches the failure
+          // answer for 15s, so the next poll (or publish) should be allowed
+          // to retry instead of sitting out the whole floor.
+          creditLastFetch[provider] = Date.now() - CREDITS_MIN_INTERVAL_MS + CREDITS_FAILURE_RETRY_MS
+        }
+        creditsBusy = false
+      }
+    }
+
+    /* Which jet-hub provider the CURRENT session is on, if any. Same lazy
+       resolution contract as thunder: the theme declares no inject, so every
+       service arrives late and each read must re-get it. The model directory
+       is resolved per session id (directoryFor), loaded once (a directory that
+       has never been loaded carries no `current`), and subscribed so a channel
+       switch mid-session repaints the capsule without waiting for the poll. */
+    const creditsRefresh = async (force) => {
+      if (balanceEl === null) return
+      let sessions = null
+      try { sessions = ctx.get('sessions') } catch (e) { sessions = null }
+      if (!sessions || !sessions.list || typeof sessions.list.getSnapshot !== 'function') return
+      let snap = null
+      try { snap = sessions.list.getSnapshot() } catch (e) { snap = null }
+      const id = snap ? thunderCurrentId(snap) : undefined
+      if (id === undefined || id === null) {
+        if (creditProvider !== null) { creditProvider = null; creditPaintIdle() }
+        return
+      }
+      let directories = null
+      try { directories = ctx.get('modelDirectories') } catch (e) { directories = null }
+      if (!directories || typeof directories.directoryFor !== 'function') return
+      let directory = null
+      try { directory = directories.directoryFor(id) } catch (e) { directory = null }
+      if (!directory || !directory.store) return
+      // Watch each directory's store exactly once: a session switch hands us a
+      // new directory object, which is what re-arms the subscription here.
+      if (creditsWatchedStore !== directory.store) {
+        if (typeof creditsUnsub === 'function') { try { creditsUnsub() } catch (e) { /* gone */ } }
+        creditsUnsub = null
+        creditsWatchedStore = directory.store
+        if (typeof directory.store.subscribe === 'function') {
+          try {
+            creditsUnsub = directory.store.subscribe(() => { creditsRebind() })
+          } catch (e) { creditsUnsub = null }
+        }
+      }
+      if (typeof directory.load === 'function') {
+        try { await directory.load() } catch (e) { /* unreadable: fall through to snapshot */ }
+      }
+      let state = null
+      try { state = directory.store.getSnapshot() } catch (e) { state = null }
+      const provider = state && state.current ? state.current.provider : undefined
+      const next = (typeof provider === 'string' && JET_HUB_PROVIDER_LABELS[provider] !== undefined)
+        ? provider
+        : null
+      if (next !== creditProvider || (next !== null && !creditProviderResolved)) {
+        creditProvider = next
+        creditProviderResolved = next !== null
+        creditPaintIdle()
+      }
+      // A switch (force, from the store subscription) bypasses the rate
+      // floor so the read follows the channel immediately; the 60s poll
+      // passes force=false and is throttled by creditsApply.
+      if (next !== null) await creditsApply(next, force === true)
+    }
+
+    /* Store events land here; a channel flip re-reads the directory and
+       repaints. Debounced so a burst of publishes collapses into one read.
+       The debounce itself is also the switch detector: if the provider the
+       delayed read resolves differs from the one painted, the fetch is
+       forced — ordinary publishes (balance churn, model-list updates) keep
+       the throttle. */
+    const creditsRebind = () => {
+      if (balanceEl === null) return
+      if (creditsRebindTimer !== null && typeof clearTimeout === 'function') clearTimeout(creditsRebindTimer)
+      creditsRebindTimer = null
+      if (typeof setTimeout !== 'function') { creditsRefresh(true); return }
+      creditsRebindTimer = setTimeout(() => {
+        creditsRebindTimer = null
+        creditsRefresh(true)
+      }, 150)
+    }
+
+    /* First resolve races the boot pose; a bounded retry covers the model
+       service arriving late, mirroring the thunder budget. */
+    const creditsStart = () => {
+      creditsRebindAttempts = 0
+      const attempt = () => {
+        if (balanceEl === null) return
+        let sessions = null
+        try { sessions = ctx.get('sessions') } catch (e) { sessions = null }
+        if (sessions === undefined || sessions === null) {
+          creditsRebindAttempts += 1
+          if (creditsRebindAttempts <= 100 && typeof setTimeout === 'function') {
+            creditsRebindTimer = setTimeout(attempt, 120)
+          }
+          return
+        }
+        creditsRefresh()
+      }
+      attempt()
+    }
+
+    /* ---------- 峰谷定价窗口（本地计算） ----------
+       The published rule (api-docs.deepseek.com pricing): Beijing time Mon-Fri
+       9:00-12:00 and 14:00-18:00 are PEAK; everything else — nights, weekends,
+       statutory holidays — is OFF-PEAK at half price. Two cases the summary
+       rule leaves open are settled by DeepSeek's own 「API 峰谷时间补充说明」
+       (2026-09-19): a Chinese statutory holiday is off-peak ALL DAY, and a
+       调休 make-up workday that lands on a weekend is still billed as a weekend,
+       i.e. off-peak all day as well. The second ruling is why the weekend test
+       below needs no exception list — every 调休 day in the notices is a
+       Saturday or Sunday (check.js enforces exactly that), so "weekend =>
+       valley" already bills them off-peak.
+
+       Everything is computed against UTC+8 directly (a fixed offset zone, no
+       DST), so the result is exact regardless of the viewer's machine zone:
+       shifting a Date by +8h and reading its UTC fields yields the Beijing
+       wall clock.
+
+       The window is the longest run of CONSECUTIVE EQUAL-PRICE blocks, not the
+       calendar day. Midnight is not a price edge, so Friday's evening valley
+       runs on through the weekend into Monday 09:00, and a 7-day national
+       holiday reads as ONE valley rather than resetting every midnight. Peak
+       blocks stay 3h/4h, so a peak read is identical to the old day-scoped one.
+
+       Returns { peak, holiday, elapsedMs, totalMs, remainingMs, elapsedPct } —
+       elapsed/total drive the 「低谷已过33%」 read, remainingMs the
+       「剩余42:29:37」 countdown, peak the 高峰/低谷 label and holiday the name
+       of the statutory holiday the day sits in ('' otherwise). Only the brand
+       pose names the holiday: the settled row must not grow a character, or it
+       would push the pill past the width its breakpoint was derived from. */
+
+    /* Statutory-holiday calendar, transcribed from the State Council's yearly
+       放假安排 notice. `from`/`to` are INCLUSIVE Beijing dates (MM-DD); `makeup`
+       lists the weekend days worked to make the span and is kept as evidence
+       for the ruling above (the code bills them as weekends, like any other
+       Saturday). A year WITHOUT an entry falls back to the plain weekday/weekend
+       rule — an unlisted holiday would be billed as peak — so check.js fails
+       when the CURRENT Beijing year is missing, which is the reminder to add the
+       next notice (published each November). Pure data, no logic: safe to
+       evaluate on its own by the guard. */
+    const BALANCE_HOLIDAY_NOTICES = {
+      2026: {
+        notice: '国办发明电〔2025〕7号',
+        spans: [
+          { name: '元旦', from: '01-01', to: '01-03', makeup: ['01-04'] },
+          { name: '春节', from: '02-15', to: '02-23', makeup: ['02-14', '02-28'] },
+          { name: '清明节', from: '04-04', to: '04-06', makeup: [] },
+          { name: '劳动节', from: '05-01', to: '05-05', makeup: ['05-09'] },
+          { name: '端午节', from: '06-19', to: '06-21', makeup: [] },
+          { name: '中秋节', from: '09-25', to: '09-27', makeup: [] },
+          { name: '国庆节', from: '10-01', to: '10-07', makeup: ['09-20', '10-10'] },
+        ],
+      },
+    }
+
+    /* 'YYYY-MM-DD' -> holiday name, expanded once from the spans above. */
+    const BALANCE_HOLIDAY_DATES = new Map()
+    const balanceBeijingKey = (ms) => {
+      const d = new Date(ms + 8 * 3600 * 1000) // Beijing wall clock, read as UTC
+      const mo = d.getUTCMonth() + 1
+      const day = d.getUTCDate()
+      return d.getUTCFullYear() + '-' + (mo < 10 ? '0' : '') + mo + '-' + (day < 10 ? '0' : '') + day
+    }
+    for (const year of Object.keys(BALANCE_HOLIDAY_NOTICES)) {
+      for (const span of BALANCE_HOLIDAY_NOTICES[year].spans) {
+        const from = span.from.split('-').map(Number)
+        const to = span.to.split('-').map(Number)
+        const last = Date.UTC(Number(year), to[0] - 1, to[1])
+        for (let at = Date.UTC(Number(year), from[0] - 1, from[1]); at <= last; at += 24 * 3600 * 1000) {
+          BALANCE_HOLIDAY_DATES.set(balanceBeijingKey(at), span.name)
+        }
+      }
+    }
+
+    /* Statutory holiday covering the Beijing day of `ms`, '' on ordinary days. */
+    const balanceHolidayName = (ms) => BALANCE_HOLIDAY_DATES.get(balanceBeijingKey(ms)) || ''
+
+    /* True when the WHOLE Beijing day containing `ms` is off-peak: a weekend
+       (including the 调休 workdays that fall on one) or a statutory holiday. */
+    const balanceDayIsOffPeak = (ms) => {
+      const weekday = new Date(ms + 8 * 3600 * 1000).getUTCDay()
+      return weekday === 0 || weekday === 6 || BALANCE_HOLIDAY_DATES.has(balanceBeijingKey(ms))
+    }
+
+    const BALANCE_PEAK_WINDOWS = [[9 * 60, 12 * 60], [14 * 60, 18 * 60]] // minutes-of-day
+    /* One ordinary weekday as valley/peak blocks, derived from the peak windows
+       above so the two can never disagree: valley, peak, valley, peak, valley. */
+    const balanceWeekdayBlocks = () => {
+      const blocks = []
+      let at = 0
+      for (const win of BALANCE_PEAK_WINDOWS) {
+        if (win[0] > at) blocks.push([at, win[0], false])
+        blocks.push([win[0], win[1], true])
+        at = win[1]
+      }
+      if (at < 24 * 60) blocks.push([at, 24 * 60, false])
+      return blocks
+    }
+    const BALANCE_WEEKDAY_BLOCKS = balanceWeekdayBlocks()
+    const BALANCE_OFF_PEAK_DAY_BLOCKS = [[0, 24 * 60, false]]
+    /* Ceiling on the equal-price walk. A 9-day 春节 plus its weekends is ~20
+       blocks, so this is unreachable in practice; it only stops a broken table
+       from walking for a whole second inside a 1s tick. */
+    const BALANCE_WINDOW_WALK_CAP = 4096
+    const balancePricingWindow = (now) => {
+      const t = now.getTime()
+      const shift = new Date(t + 8 * 3600 * 1000)
+      const minute = shift.getUTCHours() * 60 + shift.getUTCMinutes()
+      const secOfDay = minute * 60 + shift.getUTCSeconds()
+      const dayMs = 24 * 3600 * 1000
+      const dayStart = t - secOfDay * 1000 // Beijing midnight, absolute time
+      const blocksAt = (dayOffset) =>
+        (balanceDayIsOffPeak(dayStart + dayOffset * dayMs)
+          ? BALANCE_OFF_PEAK_DAY_BLOCKS
+          : BALANCE_WEEKDAY_BLOCKS)
+      const blocks = blocksAt(0)
+      let slot = 0
+      for (let i = 0; i < blocks.length; i += 1) {
+        if (minute >= blocks[i][0] && minute < blocks[i][1]) {
+          slot = i
+          break
+        }
+      }
+      const peak = blocks[slot][2]
+      let windowStart = dayStart + blocks[slot][0] * 60 * 1000
+      let windowEnd = dayStart + blocks[slot][1] * 60 * 1000
+      if (!peak) {
+        /* Walk the flat block sequence outwards from today's block while the
+           neighbour stays a valley; the first peak block is the edge. Midnight
+           needs no special case because it is not a price edge, which is what
+           makes a weekend (or a whole national holiday) one contiguous valley. */
+        let day = 0
+        let i = slot
+        for (let step = 0; step < BALANCE_WINDOW_WALK_CAP; step += 1) {
+          if (i > 0) {
+            i -= 1
+          } else {
+            day -= 1
+            i = blocksAt(day).length - 1
+          }
+          const back = blocksAt(day)[i]
+          if (back[2]) break
+          windowStart = dayStart + day * dayMs + back[0] * 60 * 1000
+        }
+        day = 0
+        i = slot
+        for (let step = 0; step < BALANCE_WINDOW_WALK_CAP; step += 1) {
+          if (i + 1 < blocksAt(day).length) {
+            i += 1
+          } else {
+            day += 1
+            i = 0
+          }
+          const next = blocksAt(day)[i]
+          if (next[2]) break
+          windowEnd = dayStart + day * dayMs + next[1] * 60 * 1000
+        }
+      }
+      const elapsedMs = Math.max(0, t - windowStart)
+      const totalMs = Math.max(1, windowEnd - windowStart)
+      return {
+        peak,
+        holiday: peak ? '' : balanceHolidayName(dayStart),
+        elapsedMs,
+        totalMs,
+        remainingMs: Math.max(0, windowEnd - t),
+        elapsedPct: Math.min(100, Math.round((elapsedMs / totalMs) * 100)),
+      }
+    }
+
+    /* hh:mm:ss with hours unclamped — a weekend valley legitimately runs past
+       a day boundary in feel, and the reference screenshot shows exactly that
+       shape ("剩余42:29:37"). */
+    const balanceFormatCountdown = (ms) => {
+      const total = Math.max(0, Math.floor(ms / 1000))
+      const h = Math.floor(total / 3600)
+      const m = Math.floor((total % 3600) / 60)
+      const s = total % 60
+      const pad = (n) => (n < 10 ? '0' + String(n) : String(n))
+      return String(h) + ':' + pad(m) + ':' + pad(s)
+    }
+
+    /* Re-derive the window from wall clock and repaint the pricing half. Runs
+       every tick; before the first balance answer arrives the money half still
+       shows its 待机 (¥--) seed, so the capsule never renders an empty slot.
+       The dial is driven by ONE custom property: the ring's conic-gradient reads
+       --endfield-balance-sweep, so progress never re-lays-out the pill. */
+    const balancePaintWindow = () => {
+      if (balanceEl === null || typeof document === 'undefined') return
+      // Credits mode owns the right-hand dial (consumption share) and has no
+      // pricing window: the peak/off-peak clock is a DeepSeek API concept, so
+      // a jet-hub channel must not have the next tick overwrite the sweep or
+      // resurrect the countdown text. The 1s interval keeps running for the
+      // wallet mode's collapse bookkeeping; this early return is the whole
+      // mode handoff.
+      if (creditProvider !== null) {
+        if (balanceBootAt !== 0) {
+          const waited = Date.now() - balanceBootAt
+          const ready = balanceBootAnswered || waited >= BALANCE_BOOT_MAX_MS
+          if (waited >= BALANCE_BOOT_MIN_MS && ready && loaderEl === null) {
+            balanceBootAt = 0
+            balanceEl.removeAttribute('data-endfield-balance-boot')
+            if (typeof balanceEl.style?.setProperty === 'function') {
+              balanceEl.style.setProperty('border-radius', '999px', 'important')
+            }
+          }
+        }
+        return
+      }
+      let win
+      try {
+        win = balancePricingWindow(new Date())
+      } catch (e) {
+        return
+      }
+      const setText = (attr, text) => {
+        const node = balanceEl.querySelector('[' + attr + ']')
+        if (node) node.textContent = text
+      }
+      const phase = balanceEl.querySelector('[data-endfield-balance-phase]')
+      if (phase) {
+        phase.textContent = win.peak ? '高峰' : '低谷'
+        phase.setAttribute('data-endfield-balance-phase-peak', win.peak ? '1' : '0')
+      }
+      setText('data-endfield-balance-remain', balanceFormatCountdown(win.remainingMs))
+      setText('data-endfield-balance-pct', (win.peak ? '高峰已过' : '低谷已过') + win.elapsedPct + '%')
+      // The brand pose names the window it opens onto, so the panel never claims
+      // 低谷 while the clock has already crossed into 高峰.
+      const brandTitle = balanceEl.querySelector('[data-endfield-balance-brand-title]')
+      if (brandTitle) {
+        // The pose names the window it opens onto; on a statutory holiday it
+        // names the holiday, because 低谷 alone would read as an ordinary night.
+        const label = win.peak
+          ? 'DeepSeek 当前高峰'
+          : 'DeepSeek ' + (win.holiday === '' ? '当前低谷' : win.holiday + '低谷')
+        if (brandTitle.textContent !== label) brandTitle.textContent = label
+      }
+      if (typeof balanceEl.style?.setProperty === 'function') {
+        balanceEl.style.setProperty('--endfield-balance-sweep', win.elapsedPct * 3.6 + 'deg')
+      }
+      /* Collapse the brand pose: held for at least MIN so the brand is readable,
+         released by the first answer, capped by MAX when the host never replies,
+         and never released while the boot plate is up — the two overlays sit at
+         the same point on screen and would cross-fade over each other. Writing
+         the stadium radius inline here is what hands the shape back to the pill
+         after the pose; the transition interpolates 14px -> 999px. */
+      if (balanceBootAt !== 0) {
+        const waited = Date.now() - balanceBootAt
+        const ready = balanceBootAnswered || waited >= BALANCE_BOOT_MAX_MS
+        if (waited >= BALANCE_BOOT_MIN_MS && ready && loaderEl === null) {
+          balanceBootAt = 0
+          balanceEl.removeAttribute('data-endfield-balance-boot')
+          if (typeof balanceEl.style?.setProperty === 'function') {
+            balanceEl.style.setProperty('border-radius', '999px', 'important')
+          }
+        }
+      }
+    }
+
+    const balanceFetch = async () => {
+      if (balanceBusy || typeof fetch !== 'function') return
+      balanceBusy = true
+      try {
+        const res = await fetch(BALANCE_URL, { method: 'GET' })
+        const payload = await res.json().catch(() => null)
+        // A wallet answer never overwrites the channel read: while a jet-hub
+        // provider is live the money group belongs to it, so the DeepSeek
+        // poll only refreshes the numbers the wallet mode will show when the
+        // user switches back.
+        if (payload && payload.ok && creditProvider === null) {
+          const wallet = balancePickWallet(payload.wallets)
+          if (wallet) balancePaint(wallet)
+        }
+      } catch (e) { /* keep last known values; the next poll retries */ } finally {
+        balanceBusy = false
+        // "Answered" covers a failed request too: the brand pose is a waiting
+        // room, not a promise that money is on the way.
+        balanceBootAnswered = true
+      }
+    }
+
+    /* `forceBoot` replays the opening pose for the settings 预览 button. It is
+       the one caller allowed to override the OS reduced-motion preference: the
+       user asked for this animation by name, and without the override the button
+       would look broken to exactly the people who turn motion down. */
+    const showBalanceCapsule = (forceBoot) => {
+      if (!isEnabled() || !isBalanceCapsuleOn()) return
+      if (typeof document === 'undefined' || !document.body) return
+      if (balanceEl !== null) return
+      const el = document.createElement('div')
+      el.setAttribute('data-endfield-balance', '')
+      // The theme's zero-radius pass is `body:not(.theme-endfield-round) [class]
+      // { border-radius: 0 !important }`, and a host style could add one more
+      // layer on top. The capsule is a stadium by design, so its radius is
+      // written inline with priority where nothing applied later can flatten it.
+      // The boot pose borrows the brand panel's 14px first; the collapse writes
+      // the stadium value back. Guarded because a jsdom-ish host hands back a
+      // createElement() node whose style object carries no setProperty.
+      const bootAnimated = forceBoot === true || isBalanceBootAnimated()
+      if (el.style && typeof el.style.setProperty === 'function') {
+        el.style.setProperty('border-radius', bootAnimated ? '14px' : '999px', 'important')
+      }
+      // Informational overlay over navigation: never announced, never hit-tested.
+      el.setAttribute('aria-hidden', 'true')
+      el.innerHTML =
+        '<span data-endfield-balance-icon></span>' +
+        '<span data-endfield-balance-money>' +
+        '<span data-endfield-balance-currency>¥</span>' +
+        '<span data-endfield-balance-int>--</span>' +
+        '<span data-endfield-balance-frac></span>' +
+        '</span>' +
+        // The channel read lives in its own group and swaps with the wallet via
+        // the pill's data-endfield-credit-mode attribute (wallet | credits).
+        '<span data-endfield-credit-money>' +
+        '<span data-endfield-credit-channel></span>' +
+        '<span data-endfield-credit-int>--</span>' +
+        '<span data-endfield-credit-unit></span>' +
+        '</span>' +
+        // The pricing countdown is the wallet mode's middle read only — peak/
+        // off-peak windows are a DeepSeek API concept, so the credits mode
+        // hides the whole run via the same mode attribute.
+        '<span data-endfield-balance-window>' +
+        '<span data-endfield-balance-phase>低谷</span>时段剩余' +
+        '<span data-endfield-balance-remain></span>' +
+        '</span>' +
+        // The right-hand slot carries one read per mode: the elapsed pricing
+        // share (wallet) or the channel's consumption share (credits). Two
+        // exclusive nodes, swapped by the same attribute.
+        '<span data-endfield-balance-pct></span>' +
+        '<span data-endfield-credit-pct></span>' +
+        '<span data-endfield-balance-badge>' +
+        '<span data-endfield-balance-ring></span>' +
+        '<span data-endfield-balance-clock></span>' +
+        '</span>' +
+        // The brand pose lives in the same box, absolutely placed over the row:
+        // it is inert when the attribute is off (opacity 0, pointer-events none).
+        '<span data-endfield-balance-brand>' +
+        '<span data-endfield-balance-brand-mark></span>' +
+        '<span data-endfield-balance-brand-copy>' +
+        '<span data-endfield-balance-brand-kicker>/// DEEPSEEK API</span>' +
+        '<span data-endfield-balance-brand-title>DeepSeek 当前低谷</span>' +
+        '</span>' +
+        '</span>'
+      document.body.appendChild(el)
+      balanceEl = el
+      balanceBootAnswered = false
+      if (bootAnimated) {
+        // Raised before the first paint, so the pill never flashes the settled
+        // row on its way into the pose.
+        el.setAttribute('data-endfield-balance-boot', '')
+        balanceBootAt = Date.now()
+      } else {
+        balanceBootAt = 0
+      }
+      // Wallet mode is the seed: an absent model service or a DeepSeek session
+      // must never leave the channel group blanking the money read.
+      el.setAttribute('data-endfield-credit-mode', 'wallet')
+      creditPaintIdle()
+      balanceFetch()
+      creditsStart()
+      balancePaintWindow()
+      if (typeof setInterval === 'function') {
+        balanceTimer = setInterval(balancePaintWindow, BALANCE_TICK_MS)
+        // One poll heartbeat drives both reads: the wallet fetch and a channel
+        // re-resolve. The credit half is throttled inside creditsApply
+        // (CREDITS_MIN_INTERVAL_MS since that provider's last completed
+        // fetch), so the 60s heartbeat itself costs one cheap local lookup
+        // and an actual usage.badge RPC only every five minutes per provider.
+        balancePollTimer = setInterval(() => {
+          balanceFetch()
+          creditsRefresh(false)
+        }, BALANCE_POLL_MS)
+      }
+    }
+
+    const syncBalanceCapsule = () => {
+      if (!(isEnabled() && isBalanceCapsuleOn())) {
+        destroyBalanceCapsule()
+        return
+      }
+      // showBalanceCapsule() is idempotent (guards on balanceEl), so re-syncing
+      // while already mounted just re-asserts the same state.
+      showBalanceCapsule()
     }
 
     let disposeToken = () => {}
@@ -2401,13 +5074,130 @@ function apply(ctx) {
         light: '#e8e8e2',
         dark: '#101110',
       },
+      /* ---------- menus stay OPAQUE (0.2's translucent menu material) ----------
+         Every 0.2 menu is drawn by the shared MenuSurface primitive (shipped by
+         @deepseek-ai/dsh-client-ui-primitives, consumed by dsh-client-ui-commands,
+         dsh-client-ui-input-trigger, dsh-client-ui-model-selection, …): one
+         [data-menu-material="translucent"] box whose ONLY paint is a z-index:-1 child
+
+             .<hash>_material { position:absolute; inset:0; z-index:-1;
+               border-radius:inherit;
+               background: var(--dsw-menu-surface-fill);
+               backdrop-filter: var(--dsw-menu-backdrop-filter); }
+
+         with the two variables coming from the design platform:
+
+             body { --dsw-menu-surface-fill:#f8f9fa94;      (light, 58% alpha)
+                    --dsw-specific-menu:var(--dsw-menu-surface-fill); }
+             body[data-ds-dark-theme] { --dsw-menu-surface-fill:#43454a73; }  (45%)
+             [data-menu-material] { --dsw-menu-backdrop-filter:blur(40px) saturate(150%) }
+
+         So the shipped menu surface is a TRANSLUCENT fill that leans on a 40px
+         backdrop blur for its separation — and it is the only surface in the app the
+         theme left alone.
+
+         Reported symptom: the slash-command menu read as having NO background at all,
+         with the transcript legible straight through it. There is no theme rule to
+         blame (the theme paints no menu and sets no backdrop-filter outside glass),
+         which fits the mechanism: the blur does not composite in this window (Chromium
+         cannot blur a transparent window, which is why the same component ships a
+         separate opaque `data-menu-backing` element for macOS only), so the 45% fill
+         lands on top of the contour sheet a couple of RGB steps away from the page
+         colour — a panel that is technically painted and visually absent.
+
+         The fix is one token, not a selector: the theme already owns an opaque
+         popover colour (--dsw-alias-bg-overlay, the app's own "Overlay and popover
+         background"), so the menu surface is pinned to it. Every MenuSurface inherits
+         it, and so does --dsw-specific-menu, which is defined as
+         var(--dsw-menu-surface-fill). A token cannot be renamed out from under us the
+         way a hashed class name can.
+
+         The blur is deliberately LEFT IN PLACE: an opaque fill paints over whatever
+         the backdrop filter produced, so the platform keeps its own compositing path
+         (and its macOS backing element) while the user sees a solid panel. Removing it
+         would mean adding a rule that must match a hashed class, for no visual gain.
+
+         Guarded by test/menu-surface.test.js: it renders this exact markup over a
+         striped backdrop, proves the shipped default really is translucent (the
+         fixture is not vacuous), then runs the real client.js and requires EVERY pixel
+         inside the menu to be the opaque overlay colour. check.js pins the token name
+         and its value, and selftest.js injects the shipped translucent literal back to
+         prove the guard bites. */
+      '--dsw-menu-surface-fill': {
+        light: 'var(--dsw-alias-bg-overlay)',
+        dark: 'var(--dsw-alias-bg-overlay)',
+      },
+      /* Turn-status label ("Deep diving…") on DSH 0.2, where it stopped being
+         gradient text. The label moved from
+         @deepseek-ai/dsh-client-ui-conversation (gradient text: background-image
+         plus background-clip:text, recoloured by the two rules further down) to
+         @deepseek-ai/dsh-client-ui-chat, whose whole rule is
+
+             .<hash>_running {
+               --dsw-alias-label-shimmer: var(--dsw-alias-label-deep-diving-shimmer);
+               color: var(--dsw-alias-label-deep-diving);
+             }
+
+         over a masked-sweep overlay. There is no gradient left to repaint, so the
+         label is retinted through the two tokens it actually reads — the same
+         seam this layer already uses for every other colour:
+             -deep-diving          rests the glyphs
+             -deep-diving-shimmer  is what the mask reveals as the sweep
+         Both are declared by @deepseek-ai/dsh-client-ui-theme on <body> and
+         consumed ONLY by that one chat rule (verified against the shipped 0.2
+         bundles), so retinting them here cannot bleed into another surface.
+         Values reuse the measured --edge-status-* stops, so the contrast work
+         documented on the turn-status rules below still applies unchanged: light
+         dips to #6b5d00 / #3f3600, dark lifts to #fff500 / #a08a00, and the
+         武陵青 palette swaps both pairs by redefining --edge-status-* on body. */
+      '--dsw-alias-label-deep-diving': {
+        light: 'var(--edge-status-light)',
+        dark: 'var(--edge-status-dark)',
+      },
+      '--dsw-alias-label-deep-diving-shimmer': {
+        light: 'var(--edge-status-light-mid)',
+        dark: 'var(--edge-status-dark-mid)',
+      },
     })
 
     disposeStyles = insertCss(`
-      :root {
-        --dsw-font-family: Arial, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
-        --ds-font-family-code: 'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas, 'Liberation Mono', Menlo, Courier, 'PingFang SC', 'Microsoft YaHei';
-      }
+      /* ================= typography: SCOPED to the theme's own elements =====
+         The theme used to redeclare the app's two font TOKENS at :root:
+             --dsw-font-family: Arial, ...      -> dropped, see below
+             --ds-font-family-code: <mono list> -> dropped (see the note under it)
+         and that is what broke third-party widgets.
+
+         WHY IT BROKE THEM. The app declares --dsw-font-family at :root and then
+         renders the UI root font from it — dsh-web-frontend ships exactly
+         'body{font-family:var(--dsw-font-family, <system stack>)}'. A :root
+         declaration WINS over the app's own :root one, so the entire UI root
+         font became Arial; a widget injected into the app root (DeepSeek-
+         Balance-Whale-Widget and friends) carries 'font-family:inherit' and
+         therefore inherited Arial, losing its own face for its balance digits.
+         The root font token is a SHARED PUBLIC INTERFACE of the app, not a
+         theme-private knob: overriding it silently restyles every third-party
+         component on the page, so this theme no longer touches either token.
+
+         WHAT KEEPS THE LOOK. The theme's industrial editorial face lives in
+         --edge-font, declared on body and applied ONLY to elements this theme
+         owns: the boot plate, the watermark wordmark, and the settings panel.
+         --dsw-font-family is still READ on those elements, as the trailing
+         fallback of that stack, so nothing outside the theme is ever affected
+         while the app's own font configuration stays part of the protocol. The
+         ORDER of that stack matters and is documented where it is declared —
+         flipping it re-types the boot plate.
+
+         The code token went for the same reason. It is nearly identical to the
+         app's own list (only the final fallbacks differ: Liberation Mono, Menlo,
+         Courier, PingFang SC, Microsoft YaHei here vs Helvetica, Arial,
+         sans-serif in the app), so dropping the override is visually inert on
+         every code surface the theme does not own.
+
+         NO GLOBAL TEXT PROPERTIES EITHER. There is deliberately no 'body { ... }'
+         rule setting font-family / font-feature-settings / font-variant-*: all
+         three inherit, so all three leak into injected third-party nodes exactly
+         the way the token did. openType features belong on the specific elements
+         that measure with them instead (see the loader's own tabular figures). */
       /* ================= accent palette =================================
          Every accent value in this stylesheet reads from the variables below
          instead of a literal, so the whole theme repaints from ONE declaration
@@ -2537,8 +5327,59 @@ function apply(ctx) {
         --edge-panel: var(--dsw-alias-bg-layer-1);
         --edge-line: var(--dsw-alias-border-l1);
         --edge-soft: var(--dsw-alias-bg-layer-2);
+        /* The theme's own face. THREE things are deliberate here.
+
+           (1) THE THEME STACK LEADS, with --dsw-font-family as a trailing
+               fallback — and this ORDER was measured, not guessed. On this host
+               the app's token renders in Segoe UI while the theme's stack renders
+               Arial (same string, 81.688px vs 84.516px — measured by
+               test/font-scope.test.js), so reading the token FIRST would silently
+               repaint the boot plate, the watermark and the settings panel in a
+               different face and invalidate every Arial-based proportion the
+               loader was measured with (see the pixel-scan notes on the brand
+               block). Leading with the theme stack keeps those surfaces exactly
+               as they render today, which is what this fix has to promise: the
+               request is to stop RESTYLING THE WHOLE APP, not to re-type the
+               theme.
+           (2) THE TOKEN IS STILL HONOURED, which is the protocol half of the
+               requirement: it is read, not ignored, and it is what applies on a
+               host with no Arial/Narrow/PingFang/YaHei at all — so a system
+               carrying neither the theme stack nor a configured root font still
+               lands on the app's stack instead of an arbitrary generic. A user
+               who deliberately configures a root font family therefore still
+               reaches the theme's own elements. If a future author wants the
+               world's configuration to win OUTRIGHT over the theme face, swapping
+               the two halves of this declaration is the whole change — say so in
+               the commit, because it re-types the boot plate.
+           (3) IT IS DECLARED ON body, NOT :root, for the same reason the aliases
+               above are — see the app-token note higher up. The var() fallback is
+               not decoration either: a custom property that substitutes a token
+               missing at the element it is READ from computes to nothing, the
+               trap that already shipped once with --edge-line
+               (test/probe-edge-line.js). Resolving where the value is used cannot
+               hit it. */
+        --edge-font: Arial, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif, var(--dsw-font-family);
       }
-      body {
+      /* ---------- where the theme's face is applied, and where it is NOT ----------
+         Only elements this theme created or owns. Every one of the three is a
+         node the theme injected itself, so a third-party widget can never be an
+         ancestor or a descendant of one of them — unless it attaches INSIDE the
+         boot plate or the watermark, which it does not: those layers are
+         pointer-events:none, aria-hidden chrome.
+           [data-endfield-loader]  the boot plate      (also carries the feature
+                                                       settings the layout measures:
+                                                       tabular figures + the
+                                                       altered single-storey
+                                                       glyph)
+           [data-endfield-watermark] the ENDFIELD wordmark
+           .endfield-settings      the 「终末地主题设置」 panel root
+         Deliberately NOT on body: the app renders its UI root font from
+         var(--dsw-font-family) on body, and a body font-family here would
+         re-break every installed widget exactly as the old :root override did. */
+      [data-endfield-loader],
+      [data-endfield-watermark],
+      .endfield-settings {
+        font-family: var(--edge-font);
         font-feature-settings: "tnum" 1, "ss01" 1;
         font-variant-ligatures: no-common-ligatures;
       }
@@ -2555,7 +5396,10 @@ function apply(ctx) {
          Every absolute descendant the app itself renders (header:after, tab:after,
          heroGlow, the overlay composer seat) already has a positioned ancestor
          nearer than this column, so their containing blocks are unchanged. */
-      [class*='wSkVaW_root']:has(> [data-endfield-watermark]) {
+      /* Suffix-only match: the :has(>) guard pins this to exactly the element the
+         JS mounted the watermark into (only the conversation column or the app
+         frame ever hosts it), so the broad '_root' suffix cannot over-match. */
+      [class$='_root']:has(> [data-endfield-watermark]) {
         isolation: isolate;
         position: relative;
       }
@@ -2644,8 +5488,26 @@ function apply(ctx) {
       [class*='_frame']:has(> [data-endfield-contour]) {
         background: transparent !important;
       }
-      [class*='_frame']:has(> [data-endfield-contour]) [class*='wSkVaW_root'],
-      [class*='_frame']:has(> [data-endfield-contour]) [class*='ydkMvW_root'] {
+      /* WHY _centerCol / _rightbarCol and not a bare [class$='_root']: the current
+         build renders hundreds of '*_root' classes and many of them carry an
+         opaque background (trajectory bar, sidebar root, right-panel content, …).
+         Only the conversation column (inside the centre column) and the right
+         column may be cleared, so the columns scope the match. Both column
+         suffixes are unique to the layout frame
+         (@deepseek-ai/dsh-client-ui-layout/AppFrame.module.css).
+
+         0.1.x -> 0.2 MIGRATION. The right column used to be _detailsCol with the
+         opaque surface on an inner '*_root'; on 0.2 it is _rightbarCol and the
+         background sits ON THE COLUMN ITSELF, while the inner panel
+         (OUqwTW_panel in @deepseek-ai/dsh-client-ui-sidebar-right) has no
+         background at all. So the old
+             [class$='_detailsCol'] [class$='_root']
+         selector matched nothing twice over: the column suffix is gone AND the
+         element that needs clearing is now the column, not a descendant. Left
+         as-is, the right panel painted an opaque bg-base straight over the
+         contour sheet whenever it was open. */
+      [class*='_frame']:has(> [data-endfield-contour]) [class$='_centerCol'] [class$='_root'],
+      [class*='_frame']:has(> [data-endfield-contour]) [class$='_rightbarCol'] {
         background: transparent !important;
       }
       /* The sidebar reads --dsw-specific-sidebar-fill, which this theme sets to the
@@ -2663,6 +5525,66 @@ function apply(ctx) {
           rgba(0, 0, 0, 0) 0px,
           color-mix(in srgb, var(--dsw-alias-bg-base) 82%, transparent) 36px) !important;
       }
+      /* Optional bounded frost. No full-window blur, nested filters or animation. */
+      body[data-endfield-glass] {
+        --edge-glass-fill: 248 247 240;
+        --edge-glass-alpha: .8;
+        --edge-glass-blur: 14px;
+        --edge-glass-edge: rgb(255 255 255 / .65);
+        --edge-glass-sheen: rgb(255 255 255 / .35);
+      }
+      body[data-endfield-glass][data-ds-dark-theme] {
+        --edge-glass-fill: 31 36 34;
+        --edge-glass-alpha: .76;
+        --edge-glass-edge: rgb(255 255 255 / .18);
+        --edge-glass-sheen: rgb(255 255 255 / .07);
+      }
+      body[data-endfield-glass='subtle'] { --edge-glass-alpha: .68; --edge-glass-blur: 8px; }
+      body[data-endfield-glass='strong'] { --edge-glass-alpha: .9; --edge-glass-blur: 22px; }
+      body[data-endfield-glass='subtle'][data-ds-dark-theme] { --edge-glass-alpha: .64; }
+      body[data-endfield-glass='strong'][data-ds-dark-theme] { --edge-glass-alpha: .88; }
+      /* WHY [data-sidebar-right-open]: the docked right panel div (SidebarPanel)
+         is position:absolute; top:0;bottom:0;right:0 and stays in the DOM even
+         when collapsed — only its inner [data-dockkit-host=dock] child is slid
+         off-screen with visibility:hidden. Frosting the bare 'push' panel would
+         leave an opaque glass rectangle covering the right half of the screen
+         while collapsed, so frost it only when the panel is expanded. */
+      body[data-endfield-glass]
+        :is([data-composer-card], [data-sidebar-right-panel='push'][data-sidebar-right-open]) {
+        background-color: rgb(var(--edge-glass-fill) / var(--edge-glass-alpha)) !important;
+        background-image: linear-gradient(145deg, var(--edge-glass-sheen), transparent 58%),
+          radial-gradient(ellipse at 0% 0%, color-mix(in srgb, var(--edge-accent) 10%, transparent), transparent 75%) !important;
+        -webkit-backdrop-filter: blur(var(--edge-glass-blur)) saturate(1.05);
+        backdrop-filter: blur(var(--edge-glass-blur)) saturate(1.05);
+        --dsw-elevation-stroke-color: var(--edge-glass-edge);
+      }
+      body[data-endfield-glass] [data-slot='sidebar'] > div {
+        background-image: linear-gradient(145deg, var(--edge-glass-sheen), transparent 58%),
+          radial-gradient(ellipse at 0% 0%, color-mix(in srgb, var(--edge-accent) 8%, transparent), transparent 75%);
+        box-shadow: inset -1px 0 0 var(--edge-glass-edge);
+      }
+      @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+        body[data-endfield-glass]
+          :is([data-composer-card], [data-sidebar-right-panel='push'][data-sidebar-right-open]) {
+          background-color: rgb(var(--edge-glass-fill) / .96) !important;
+        }
+      }
+      @media (prefers-reduced-transparency: reduce) {
+        body[data-endfield-glass]
+          :is([data-composer-card], [data-sidebar-right-panel='push'][data-sidebar-right-open]) {
+          background-color: rgb(var(--edge-glass-fill)) !important;
+          -webkit-backdrop-filter: none; backdrop-filter: none;
+        }
+      }
+      /* ================= LOCAL PATCH: custom background image =================
+         Not part of upstream: the full-page sheet plus the navigation-column
+         overlay, and the four fixes that keep the nav from flickering black.
+         The image/fit/scrim values arrive as custom properties written from
+         JS (---edge-bg-mask / ---edge-bg-fit / ---edge-nav-mask / ---edge-nav-fit),
+         so this sheet only owns geometry and the mount-time guards. The scrim
+         washes the image toward the app's own bg-base rather than a fixed
+         black/white veil, because the app's text is designed against that
+         base — that is what keeps both schemes readable. */
       /* ================= custom background image =================
          Same mounting contract as the contour sheet: an inset:0 / z-index:0 child
          of the app frame, painted above the frame's own background and below every
@@ -2709,13 +5631,17 @@ function apply(ctx) {
          own higher z-index and are left untouched. */
       [class*='_frame']:has(> [data-endfield-bg-image]) > [class$='_sidebarCol'],
       [class*='_frame']:has(> [data-endfield-bg-image]) > [class$='_centerCol'],
-      [class*='_frame']:has(> [data-endfield-bg-image]) > [class$='_detailsCol'] {
+      [class*='_frame']:has(> [data-endfield-bg-image]) > [class$='_rightbarCol'],
+      [class$='_detailsCol'] {
         position: relative;
       }
-      [class*='_frame']:has(> [data-endfield-bg-image]) [class*='wSkVaW_root'],
-      [class*='_frame']:has(> [data-endfield-bg-image]) [class*='ydkMvW_root'] {
-        background: transparent !important;
-      }
+      /* The fork also carried two hash-pinned module selectors here
+         ([class*='wSkVaW_root'] / [class*='ydkMvW_root']). They are DROPPED on
+         purpose: CSS-module class names carry the build hash, so they die
+         silently on the next app rehash, and 0.2 has already renamed both
+         surfaces. test/selector-guard.test.js fails if they come back. The
+         layout-column rules above cover the same containers by stable
+         class-suffix selectors. */
       [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_sidebarCol'] {
         background: transparent !important;
       }
@@ -2723,8 +5649,10 @@ function apply(ctx) {
         background: transparent !important;
       }
       [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_centerCol'],
-      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_detailsCol'],
-      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_detailsCol'] [class$='_root'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_rightbarCol'],
+      [class$='_detailsCol'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_rightbarCol'],
+      [class$='_detailsCol'] [class$='_root'],
       [class*='_frame']:has(> [data-endfield-bg-image]) [data-phase] {
         background: transparent !important;
       }
@@ -2744,14 +5672,17 @@ function apply(ctx) {
       }
       body.theme-endfield-bg-on [class*='_frame'] > [class$='_sidebarCol'],
       body.theme-endfield-bg-on [class*='_frame'] > [class$='_centerCol'],
-      body.theme-endfield-bg-on [class*='_frame'] > [class$='_detailsCol'] {
+      body.theme-endfield-bg-on [class*='_frame'] > [class$='_rightbarCol'],
+      [class$='_detailsCol'] {
         position: relative;
       }
       body.theme-endfield-bg-on [class$='_sidebarCol'],
       body.theme-endfield-bg-on [class$='_sidebarCol'] [class$='_root'],
       body.theme-endfield-bg-on [class$='_centerCol'],
-      body.theme-endfield-bg-on [class$='_detailsCol'],
-      body.theme-endfield-bg-on [class$='_detailsCol'] [class$='_root'],
+      body.theme-endfield-bg-on [class$='_rightbarCol'],
+      [class$='_detailsCol'],
+      body.theme-endfield-bg-on [class$='_rightbarCol'],
+      [class$='_detailsCol'] [class$='_root'],
       body.theme-endfield-bg-on [data-phase] {
         background: transparent !important;
       }
@@ -2992,45 +5923,61 @@ function apply(ctx) {
       :is([role='tab'], [role='menuitem'], [role='option'], [role='link'], [role='treeitem'], [role='checkbox'], [role='switch'], [role='radio'], [role='combobox'], [class*='nav-item' i], [class*='menu-item' i], [class*='list-item' i], [class*='session-item' i], [class*='workspace-item' i], [class*='search-result' i], [class*='item' i], [class*='tab' i], [class*='card' i], [class*='row' i], [class*='tool' i], [class*='composer' i]):hover {
         color: var(--dsw-alias-label-primary) !important;
       }
-      /* ---------- Workspace browser rows (YDXeBa) ---------- */
-      .YDXeBa_slot {
+      /* ---------- Workspace browser rows (ui-sidebar) ---------- */
+      /* Hash-free rebuild of the old .YDXeBa_* rules: those class names are
+         '<hash>_suffix' CSS-module exports and 0.1.2-rc.1 rehashed every module,
+         killing all 33 pinned hashes. Matching survives on the SEMANTIC suffix
+         ('_sessionRow' etc.), scoped to the sidebar column — '_slot'/'_row' style
+         suffixes are too generic to match bare, but the sidebar column suffix is
+         unique to the layout frame (same hook findAppFrame() and the contour sheet
+         already rely on). Compound states match on substrings, NOT [class$=]: a
+         suffix match needs the WHOLE class attribute to end with the string, so
+         'x_sessionRow x_selected' would silently miss the second condition.
+         '_unselected' is safe against '_selected' here — the leading underscore
+         breaks the substring. */
+      [class$='_sidebarCol'] [class*='_slot'] {
         color: var(--dsw-alias-brand-primary) !important;
       }
-      .YDXeBa_projectRow:hover,
-      .YDXeBa_sessionRow:hover,
-      .YDXeBa_sessionRow.YDXeBa_selected,
-      .YDXeBa_searchResultRow:hover,
-      .YDXeBa_searchResultRow.YDXeBa_selected {
+      [class$='_sidebarCol'] [class*='_projectRow']:hover,
+      [class$='_sidebarCol'] [class*='_sessionRow']:hover,
+      [class$='_sidebarCol'] [class*='_sessionRow'][class*='_selected'],
+      [class$='_sidebarCol'] [class*='_searchResultRow']:hover,
+      [class$='_sidebarCol'] [class*='_searchResultRow'][class*='_selected'] {
         background: rgba(var(--edge-accent-rgb), 0.22) !important;
       }
-      .YDXeBa_projectRow:hover *,
-      .YDXeBa_sessionRow:hover *,
-      .YDXeBa_sessionRow.YDXeBa_selected *,
-      .YDXeBa_searchResultRow:hover *,
-      .YDXeBa_searchResultRow.YDXeBa_selected * {
+      [class$='_sidebarCol'] [class*='_projectRow']:hover *,
+      [class$='_sidebarCol'] [class*='_sessionRow']:hover *,
+      [class$='_sidebarCol'] [class*='_sessionRow'][class*='_selected'] *,
+      [class$='_sidebarCol'] [class*='_searchResultRow']:hover *,
+      [class$='_sidebarCol'] [class*='_searchResultRow'][class*='_selected'] * {
         color: #000 !important;
       }
       /* ---------- Light mode: workspace folder / icon buttons ink ---------- */
-      body:not([data-ds-dark-theme]) .YDXeBa_folder,
-      body:not([data-ds-dark-theme]) .YDXeBa_folderActive,
-      body:not([data-ds-dark-theme]) .YDXeBa_chevron,
-      body:not([data-ds-dark-theme]) .YDXeBa_arrow,
-      body:not([data-ds-dark-theme]) .YDXeBa_iconButton,
-      body:not([data-ds-dark-theme]) .qDHVXG_iconButton,
-      body:not([data-ds-dark-theme]) .qDHVXG_searchButton,
-      body:not([data-ds-dark-theme]) .qDHVXG_clearButton {
+      body:not([data-ds-dark-theme]) [class$='_sidebarCol'] [class*='_folder'],
+      body:not([data-ds-dark-theme]) [class$='_sidebarCol'] [class*='_chevron'],
+      body:not([data-ds-dark-theme]) [class$='_sidebarCol'] [class*='_arrow'],
+      body:not([data-ds-dark-theme]) [class$='_sidebarCol'] [class*='_iconButton'],
+      body:not([data-ds-dark-theme]) [class$='_sidebarCol'] [class*='_searchButton'],
+      body:not([data-ds-dark-theme]) [class$='_sidebarCol'] [class*='_clearButton'] {
         color: #101110 !important;
       }
       /* ---------- Dark mode: solid signal-yellow inversions ---------- */
-      body[data-ds-dark-theme] .YDXeBa_projectRow:hover,
-      body[data-ds-dark-theme] .YDXeBa_sessionRow:hover,
-      body[data-ds-dark-theme] .YDXeBa_sessionRow.YDXeBa_selected,
-      body[data-ds-dark-theme] .YDXeBa_searchResultRow:hover,
-      body[data-ds-dark-theme] .YDXeBa_searchResultRow.YDXeBa_selected {
+      body[data-ds-dark-theme] [class$='_sidebarCol'] [class*='_projectRow']:hover,
+      body[data-ds-dark-theme] [class$='_sidebarCol'] [class*='_sessionRow']:hover,
+      body[data-ds-dark-theme] [class$='_sidebarCol'] [class*='_sessionRow'][class*='_selected'],
+      body[data-ds-dark-theme] [class$='_sidebarCol'] [class*='_searchResultRow']:hover,
+      body[data-ds-dark-theme] [class$='_sidebarCol'] [class*='_searchResultRow'][class*='_selected'] {
         background: var(--edge-accent) !important;
       }
-      body[data-ds-dark-theme] [class*='badge' i]:hover,
-      body[data-ds-dark-theme] [class*='badge' i][data-active] {
+      /* WHY '_badge' not bare 'badge': app CSS-module badges are '<hash>_badge'
+         (zf92ZW_badge footer, dlU_AG_badge …), but third-party plugins name
+         their own widgets without the underscore word boundary —
+         dsh-codearts-auth paints a 280px .dim-jh-badgePop account card whose
+         EVERY class contains 'badge', so the bare substring hover turned the
+         whole popup solid yellow. Same lesson as the '_add' hook (see
+         selector-guard part 3). */
+      body[data-ds-dark-theme] [class*='_badge' i]:hover,
+      body[data-ds-dark-theme] [class*='_badge' i][data-active] {
         background: var(--edge-accent) !important;
       }
       /* ---------- Dark mode: icon buttons (plus / ellipsis / stop / actions) ---------- */
@@ -3107,9 +6054,10 @@ function apply(ctx) {
       [class*='table' i] tbody tr:hover *,
       [class*='tableScroll' i] tbody tr:hover,
       [class*='tableScroll' i] tbody tr:hover * {
-        color: #000 !important;
-        background: var(--edge-accent) !important;
+        color: var(--dsw-alias-label-primary) !important;
+        background: color-mix(in srgb, var(--edge-accent) 15%, var(--dsw-alias-bg-base)) !important;
       }
+      /* Text selection keeps the full accent, visibly distinct from row hover. */
       /* ---------- New session button (sidebar) ---------- */
       [class$='_newSession'] {
         color: #000 !important;
@@ -3132,10 +6080,13 @@ function apply(ctx) {
         color: #000 !important;
       }
       /* ---------- Badge hover: signal-yellow inversion (reference .kpi:hover) ---------- */
-      [class*='badge' i]:hover,
-      [class*='badge' i]:hover *,
-      [class*='badge' i][data-active],
-      [class*='badge' i][data-active] * {
+      /* '_badge' (underscore word boundary) for the same reason as the dark-mode
+         rule above: bare 'badge' substring-matches third-party plugin classes
+         (dsh-codearts-auth .dim-jh-badgePop popup + all its children). */
+      [class*='_badge' i]:hover,
+      [class*='_badge' i]:hover *,
+      [class*='_badge' i][data-active],
+      [class*='_badge' i][data-active] * {
         color: #000 !important;
       }
       /* ---------- Cordis action buttons (run/stop) ---------- */
@@ -3157,24 +6108,60 @@ function apply(ctx) {
         color: #000 !important;
         background: var(--edge-accent) !important;
       }
-      /* ---------- Agent-preset header chip: signal yellow, stretches to fill the action row ---------- */
-      /* (scoped: the old broad [class$='_label'] rule yellowed plain text labels like 产物/settings/jobs names) */
-      .SVAs4q_label {
+      /* ---------- Agent-preset header chip: accent fill, stock geometry ---------- */
+      /* Hash-free scope for the old .SVAs4q_label: the chip is the preset label the
+         agent-preset plugin registers into the "conversation.session.header.actions"
+         slot. A bare [class*='_label'] is PROHIBITED here: it was tried first and it
+         yellowed plain list labels (产物 / settings / jobs names), which is why this
+         was hash-pinned in the first place.
+
+         DOM measured off the running 0.1.5-rc.2 GUI (not inferred):
+
+           div.pI_x6G_centerCol
+             > header.wSkVaW_header
+                 > div.wSkVaW_titleRow
+                   > div.wSkVaW_titleCluster
+                     > div.wSkVaW_headerActions
+                       > div                  <- the slot's own entry wrapper.
+                         > span.SVAs4q_label     It has NO class at all, so it
+                           > svg.SVAs4q_icon     cannot be named either.
+
+         Two silent-failure lessons are baked in here — a selector that matches
+         nothing reports nothing, so both cost a shipped bug:
+           1. The chip is NOT a child of _header; it is four levels down. Every '>'
+              between the header and the chip encodes how many wrappers upstream
+              happens to render, and upstream has now added wrappers twice.
+           2. The chip's own parent is a class-less wrapper, so the depth cannot be
+              collapsed onto a named container either.
+         The scope therefore STOPS at the actions container and the chip is picked
+         out by a property of the chip itself: it is the only _label in that slot
+         carrying an icon. The jobs rows render text-only _label spans and the
+         schedule module declares no _label local at all, so the scope still does
+         exactly what it exists for. */
+      [class$='_centerCol'] [class$='_header'] [class$='_headerActions'] [class*='_label']:has(> svg) {
         color: #000 !important;
         background: var(--edge-accent) !important;
-        flex: 1 1 auto !important;
-        max-width: none !important;
-        justify-content: center !important;
         padding: 0 12px !important;
       }
-      body:not(.theme-endfield-round) .SVAs4q_label {
+      body:not(.theme-endfield-round) [class$='_centerCol'] [class$='_header'] [class$='_headerActions'] [class*='_label']:has(> svg) {
         border-radius: 0 !important;
       }
-      .SVAs4q_label .SVAs4q_icon,
-      .SVAs4q_label svg {
+      [class$='_centerCol'] [class$='_header'] [class$='_headerActions'] [class*='_label']:has(> svg) svg,
+      [class$='_centerCol'] [class$='_header'] [class$='_headerActions'] [class*='_label']:has(> svg) [class*='_icon'] {
         opacity: 1 !important;
         color: #000 !important;
       }
+      /* DELIBERATELY NOT STRETCHED. This rule used to carry flex:1 1 auto and
+         max-width:none, and an earlier attempt of this fix also flattened the slot
+         wrapper (display:contents) and grew _headerActions, to reproduce the old
+         "chip fills the action row" look. On the real 0.1.5-rc.2 header that turns
+         the chip into a full-width yellow BAR across the top of the conversation
+         (measured: 923px of a 976px row) — nothing like the stock chip it is
+         replacing, and reported straight back as "现在变成一个长条了".
+         The theme's job here is the ACCENT, not the geometry: the chip keeps its
+         stock size/hit area (height, 180px cap and ellipsis included) and only its
+         colours change. Everything that made it grow is gone — do not reintroduce
+         flex/max-width/display overrides without looking at it on the real page. */
       /* ================= dark compaction notice + residual blues ================= */
       /* Dark mode: warm label grays (compaction notice title/summary/sep used bluish defaults) */
       body[data-ds-dark-theme] {
@@ -3250,19 +6237,27 @@ function apply(ctx) {
         --dsw-alias-fill-l2: #242624;
         --dsw-alias-fill-tsp-secondary: #242624;
       }
-      /* Token meter: messages segment signal yellow, system warm gray (tools keeps purple) */
-      .JObwrW_colorMessages {
+      /* Token meter: messages segment signal yellow, system warm gray (tools keeps purple)
+         Both suffixes are unique to the ContextMeter component, so a bare substring
+         match is safe (hash-pinned .JObwrW_* died in the 0.1.2-rc.1 rehash). */
+      [class*='_colorMessages'] {
         --meter-tint: var(--edge-accent) !important;
       }
-      .JObwrW_colorSystem {
+      [class*='_colorSystem'] {
         --meter-tint: #9a9d98 !important;
       }
-      /* Appearance theme cube selected border: warm */
-      ._8HJdBW_selected {
+      /* Appearance theme cube selected border: warm.
+         '_selected' as a bare substring is safe-ish BECAUSE the rule only sets
+         border-color: an element without a border is untouched, and any bordered
+         selected element gets the warm line colour — which is the theme's
+         de-blue-ing goal everywhere anyway. In dark mode the broad accent rule
+         further down (0,2,0 specificity) outranks this and keeps its own colour. */
+      [class*='_selected'] {
         border-color: var(--dsw-alias-border-l2) !important;
       }
-      /* Hero preview badge: solid signal-yellow + black (reference accent chip) */
-      .pXSMma_previewBadge {
+      /* Hero preview badge: solid signal-yellow + black (reference accent chip).
+         '_previewBadge' is unique to the hero shell (HeroShell on 0.1.2-rc.1). */
+      [class*='_previewBadge'] {
         color: #101110 !important;
         background: var(--edge-accent) !important;
         border-color: var(--edge-accent) !important;
@@ -3295,9 +6290,12 @@ function apply(ctx) {
          (7% measured #20200E, Y +13.4 — about 1.6x the blue's lift), and 5%
          lands within ~2 Y of the original glow. So the hero keeps exactly the
          depth it had, in the theme's own accent.
-         Matched on the '_heroGlow' CSS-module suffix rather than the current
-         'wSkVaW' hash, so an app rebuild that rehashes the module cannot silently
-         bring the blue back. */
+         Matched on the '_heroGlow' CSS-module suffix, never on a build hash.
+         NOTE: 0.1.2-rc.1 removed the glow SVG entirely (the hero was merged into
+         ConversationRoot with no <HeroGlow>), and the module is still absent in
+         0.2 (verified against the shipped 0.2.0-rc.2 bundles), so these rules
+         match nothing today; they are kept as a self-healing hook in case
+         upstream restores it. */
       [class*='_heroGlow'] ellipse {
         fill: var(--edge-signal, var(--edge-accent)) !important;
         fill-opacity: var(--edge-glow-light) !important;
@@ -3331,33 +6329,78 @@ function apply(ctx) {
         background: #000 !important;
       }
       /* ================= composer add (+) button hover inversion ================= */
-      /* Dark: + icon signal yellow at rest; on hover solid yellow bg + black icon */
-      body[data-ds-dark-theme] .uV2eYG_add {
+      /* Dark: + icon signal yellow at rest; on hover solid yellow bg + black icon.
+
+         SCOPED TO THE COMPOSER, like the '_arrow' rule below and for the same
+         reason: the hook is a bare SUBSTRING ('_add'), so every upstream class that
+         merely CONTAINS it was painted too. Audited against the installed bundles
+         (0.1.7-era), the collision set is:
+           RlGAzG_add             composer + button                    <- the target
+           _3nPmjq_addActions     settings > 模型 add-block WRAPPER   <- the report
+           _3nPmjq_addBlock / _addCard / _addModes / _addPanel / _addModelButton
+           _0SbxAa_add            deliverables file-diff ADDED line
+           LFNH1G_added / kuvljq_added / pFy1Ka_diffAdded /
+           haSm5q_promptDiffLineadded
+           qWvkEq_address*        sidebar-browser address bar
+           fO69Vq_addButton / _3nPmjq_addButton   (what the old ':not()' excluded)
+
+         The reported screenshot is the WRAPPER. '_addActions' is a plain <div>
+         around 添加模型提供商, so ':disabled' never applies and pointing at the
+         BUTTON hovers the wrapper as well. The theme filled the wrapper with the
+         SOLID accent while the button kept upstream's translucent wash
+         (rgba(255,245,0,.18)) plus color: label-primary — #f5f5f0 on #fff500 =
+         1.05:1, an invisible label. The button's dashed border kept drawing over
+         the fill, which is exactly what the report shows. Measured on the running
+         build (not inferred): rest -> wrapper transparent, hover -> wrapper
+         rgb(255,245,0) under a button at rgb(245,245,240).
+
+         ':not([class*='_addButton'])' could not have caught it — the wrapper is not
+         the button — and every '*_add*' container upstream adds would have had to be
+         appended to that exclusion list one bug report at a time. Scoping fixes the
+         whole family at once, the same way '_arrow' was fixed.
+
+         The scope is the pair the composer '_primary' / '_arrow' rules already use,
+         so the + keeps its inversion. '[data-composer-seat]' is included because the
+         seat declares it upstream ('data-composer-seat', an e2e anchor): a
+         '[class$=]' hook dies silently the moment upstream appends a second class to
+         that element, which is the failure mode this file has already paid for.
+
+         Note the + is the ONLY composer element whose class contains '_add'; the
+         scope cannot reach the settings wrappers, the diff lines or the address bar.
+         Verified by test/hover-check.js against real hovered pixels in both
+         palettes and both schemes. */
+      body[data-ds-dark-theme] :is([data-composer-seat], [class$='_composerSeat'], [class$='_composerHero']) [class*='_add'] {
         color: var(--edge-accent) !important;
       }
-      body[data-ds-dark-theme] .uV2eYG_add:hover:not(:disabled),
-      body[data-ds-dark-theme] .uV2eYG_add:focus-visible {
+      body[data-ds-dark-theme] :is([data-composer-seat], [class$='_composerSeat'], [class$='_composerHero']) [class*='_add']:hover:not(:disabled),
+      body[data-ds-dark-theme] :is([data-composer-seat], [class$='_composerSeat'], [class$='_composerHero']) [class*='_add']:focus-visible {
         color: #000 !important;
         background: var(--edge-accent) !important;
       }
       /* ================= composer primary send/stop button ================= */
-      /* Dark: hardcoded #fff icon on yellow info-fill -> black icon; hover deeper yellow */
-      body[data-ds-dark-theme] .uV2eYG_primary {
+      /* Dark: hardcoded #fff icon on yellow info-fill -> black icon; hover deeper yellow.
+         Scoped to the composer (the seat band in a live conversation, the hero
+         wrapper on the empty state) and to <button>: '_primary' as a bare suffix is
+         too generic to trust with a colour flip anywhere else. */
+      body[data-ds-dark-theme] :is([class$='_composerSeat'], [class$='_composerHero']) button[class*='_primary'] {
         color: #101110 !important;
       }
-      body[data-ds-dark-theme] .uV2eYG_primary:hover:not(:disabled) {
+      body[data-ds-dark-theme] :is([class$='_composerSeat'], [class$='_composerHero']) button[class*='_primary']:hover:not(:disabled) {
         color: #101110 !important;
         background: var(--edge-accent-deep) !important;
       }
       /* ================= light-mode white-on-dark buttons keep white icon ================= */
-      /* Generic hover inversion would make the white send icon black on the dark fill */
-      body:not([data-ds-dark-theme]) :is(.uV2eYG_primary, .zGbnIq_primaryButton),
-      body:not([data-ds-dark-theme]) :is(.uV2eYG_primary, .zGbnIq_primaryButton):hover:not(:disabled) {
+      /* Generic hover inversion would make the white send icon black on the dark fill.
+         (The old list also had .zGbnIq_primaryButton from settings › 模型; upstream
+         removed that class in 0.1.2-rc.1. If a replacement appears, name it here
+         explicitly rather than widening the composer scope.) */
+      body:not([data-ds-dark-theme]) :is([class$='_composerSeat'], [class$='_composerHero']) button[class*='_primary'],
+      body:not([data-ds-dark-theme]) :is([class$='_composerSeat'], [class$='_composerHero']) button[class*='_primary']:hover:not(:disabled) {
         color: #fff !important;
       }
       /* ================= buttons the theme fills with the SOLID accent =================
-         Settings > 模型 draws its row actions with .zGbnIq_secondaryButton, whose
-         upstream rule is:
+         Settings > 模型 draws its row actions with a '<hash>_secondaryButton'
+         class (zGbnIq_ in the 0.1.1 bundles), whose upstream rule is:
              color:      var(--dsw-alias-label-primary)
              background: var(--dsw-alias-interactive-bg-hover-solid)   (on :hover)
          This theme maps that background token to the solid accent but upstream keeps
@@ -3388,34 +6431,43 @@ function apply(ctx) {
          bundles for elements whose hover background is that token found SIX, and
          three of them additionally re-assert color:label-primary in the same rule
          (so they would fight a token-level fix):
-           .zGbnIq_secondaryButton   settings > 模型 row actions   <- reported
-           .gNWCoW_inspectButton     inspect panels (cordis)
-           .iWrAna_inspectButton     inspect panels (skill)
-           .o3BgMG_inspectButton     inspect panels (tool)
-           .JVDQca_arrow             attachment carousel arrow
-           .uV2eYG_add               composer + (already handled above)
+           *_secondaryButton   settings > 模型 row actions           <- reported
+           *_inspectButton     inspect panels (cordis / skill / tool —
+                               three modules, one semantic suffix)
+           *_arrow             attachment carousel arrow
+           *_add               composer + (already handled above)
          All are the same defect on different screens, so they are fixed together
          rather than one bug report at a time.
 
-         '_inspectButton' is matched on the CLASS TOKEN, not with [class$=...], and
-         that distinction is load-bearing: an attribute-suffix match requires the
-         WHOLE class attribute to end with the string, so it silently misses any
-         element that carries a second class after it (measured: it failed on
+         MATCHING IS HASH-FREE and matched on the SUBSTRING, not [class$=...]: an
+         attribute-suffix match requires the WHOLE class attribute to end with the
+         string, so it silently misses any element that carries a second class
+         after it (measured: [class$='_inspectButton'] failed on
          class="gNWCoW_inspectButton HOVERPROBE"). Upstream composes class lists
-         freely, so [class$=] is the wrong tool here. [class~='...'] matches a
-         whitespace-separated token in any position, but the token includes the
-         build hash, so each of the three is listed explicitly — they are stable
-         names in installed bundles, and the audit above is what keeps the list
-         honest. '_arrow' is NOT matched by suffix either: two other components
-         (trajectory, workspace) also end in _arrow and take NO hover fill, so a
-         suffix match there would force ink onto elements that keep their normal
-         background — inventing a new contrast bug while fixing this one. */
-      :is(.zGbnIq_secondaryButton, .gNWCoW_inspectButton, .iWrAna_inspectButton, .o3BgMG_inspectButton, .JVDQca_arrow):hover:not(:disabled),
-      :is(.zGbnIq_secondaryButton, .gNWCoW_inspectButton, .iWrAna_inspectButton, .o3BgMG_inspectButton, .JVDQca_arrow):hover:not(:disabled) svg,
-      :is(.zGbnIq_secondaryButton, .gNWCoW_inspectButton, .iWrAna_inspectButton, .o3BgMG_inspectButton, .JVDQca_arrow):hover:not(:disabled) svg path,
-      :is(.zGbnIq_secondaryButton, .gNWCoW_inspectButton, .iWrAna_inspectButton, .o3BgMG_inspectButton, .JVDQca_arrow).HOVERPROBE:not(:disabled),
-      :is(.zGbnIq_secondaryButton, .gNWCoW_inspectButton, .iWrAna_inspectButton, .o3BgMG_inspectButton, .JVDQca_arrow).HOVERPROBE:not(:disabled) svg,
-      :is(.zGbnIq_secondaryButton, .gNWCoW_inspectButton, .iWrAna_inspectButton, .o3BgMG_inspectButton, .JVDQca_arrow).HOVERPROBE:not(:disabled) svg path {
+         freely AND rehashes modules between releases (0.1.2-rc.1 killed all 33
+         pinned hashes), so the semantic token embedded in the class is the only
+         durable hook — '_secondaryButton' / '_inspectButton' are specific enough
+         that no other component uses them.
+
+         '_arrow' is the one exception that needs SCOPING, not a bare match: two
+         other components (trajectory, workspace) also carry *_arrow classes and
+         take NO hover fill, so a bare match would force ink onto elements that
+         keep their normal background — black-on-near-black in dark mode,
+         inventing a new contrast bug while fixing this one. The attachment
+         carousel lives inside the composer, so the composer wrappers scope it;
+         if a hover-filled arrow ever renders elsewhere, add its scope here. */
+      :is([class*='_secondaryButton'], [class*='_inspectButton']):hover:not(:disabled),
+      :is([class*='_secondaryButton'], [class*='_inspectButton']):hover:not(:disabled) svg,
+      :is([class*='_secondaryButton'], [class*='_inspectButton']):hover:not(:disabled) svg path,
+      :is([class*='_secondaryButton'], [class*='_inspectButton']).HOVERPROBE:not(:disabled),
+      :is([class*='_secondaryButton'], [class*='_inspectButton']).HOVERPROBE:not(:disabled) svg,
+      :is([class*='_secondaryButton'], [class*='_inspectButton']).HOVERPROBE:not(:disabled) svg path,
+      :is([class$='_composerSeat'], [class$='_composerHero']) [class*='_arrow']:hover:not(:disabled),
+      :is([class$='_composerSeat'], [class$='_composerHero']) [class*='_arrow']:hover:not(:disabled) svg,
+      :is([class$='_composerSeat'], [class$='_composerHero']) [class*='_arrow']:hover:not(:disabled) svg path,
+      :is([class$='_composerSeat'], [class$='_composerHero']) [class*='_arrow'].HOVERPROBE:not(:disabled),
+      :is([class$='_composerSeat'], [class$='_composerHero']) [class*='_arrow'].HOVERPROBE:not(:disabled) svg,
+      :is([class$='_composerSeat'], [class$='_composerHero']) [class*='_arrow'].HOVERPROBE:not(:disabled) svg path {
         /* Ink on accent: 16.50:1 on 谷地黄, 6.62:1 on 武陵青 — both AA. */
         color: #101110 !important;
         fill: currentColor !important;
@@ -3426,8 +6478,11 @@ function apply(ctx) {
          (#f2f2ec) is only 3.16:1 — below AA for the 12px label it paints. iOS-style
          reds are tuned for white-on-red fills, not red-on-paper text. Darkening the
          TEXT colour alone (the token keeps its value for fills/dots elsewhere)
-         brings it to 5.12:1 while staying unmistakably red. */
-      body:not([data-ds-dark-theme]) .zGbnIq_dangerButton {
+         brings it to 5.12:1 while staying unmistakably red.
+         (0.1.2-rc.1 removed the old zGbnIq_dangerButton class; the semantic suffix
+         is kept so the rule re-arms itself if the button returns under the same
+         name, and no-ops harmlessly until then.) */
+      body:not([data-ds-dark-theme]) [class*='_dangerButton'] {
         color: #c62016 !important;
       }
       /* ================= dark mode: selected rows = solid signal-yellow + black text ================= */
@@ -3476,11 +6531,12 @@ function apply(ctx) {
         background: rgba(16, 17, 16, 0.16) !important;
       }
       /* ---------- Turn-status label ("Deep diving...") ----------
-         Owner: @deepseek-ai/dsh-client-ui-conversation, class Md3f7G_turnStatus.
+         MOVED AND RE-MECHANISED ON DSH 0.2, so the recolour moved with it.
 
-         This label is GRADIENT TEXT, not coloured text. Upstream paints a
-         linear-gradient background, sets -webkit-text-fill-color: transparent plus
-         background-clip: text, and animates background-position to shimmer:
+         On 0.1.x the label was owned by @deepseek-ai/dsh-client-ui-conversation as
+         'Md3f7G_turnStatus' and painted as GRADIENT TEXT — a linear-gradient
+         background, -webkit-text-fill-color: transparent plus background-clip:
+         text, shimmered by animating background-position:
 
            background: linear-gradient(90deg,
              var(--dsw-static-deepseek-500) 0%   40%,
@@ -3488,42 +6544,50 @@ function apply(ctx) {
              var(--dsw-static-deepseek-500) 60% 100%);
            color: #0000; -webkit-text-fill-color: transparent;
 
-         Two consequences drive the rules below:
-           1. A plain 'color:' CANNOT recolour this label — the transparent text
-              fill wins, so the glyphs would stay whatever the gradient paints. The
-              recolour therefore has to go through the gradient itself.
-           2. Retinting the shared --dsw-static-deepseek-* tokens is the wrong lever:
-              --dsw-static-deepseek-500/200 also back --dsw-alias-button-info-fill,
-              --dsw-alias-state-business-primary and --dsw-specific-bubble-highlight
-              (verified in dsh-client-ui-theme/styles/design-platform.css), so the
-              theme already maps them to ink/paper on purpose. Only
-              background-image is overridden here, which leaves upstream's
-              background-size, background-position and shimmer animation untouched.
+         Two consequences drove the 0.1.x rules that used to live here:
+           1. A plain 'color:' CANNOT recolour that label — the transparent text
+              fill wins, so the recolour had to go through the gradient itself.
+           2. Retinting the shared --dsw-static-deepseek-* tokens would be the wrong
+              lever: --dsw-static-deepseek-500/200 also back
+              --dsw-alias-button-info-fill, --dsw-alias-state-business-primary and
+              --dsw-specific-bubble-highlight (verified in
+              dsh-client-ui-theme/styles/design-platform.css), so the theme maps
+              them to ink/paper on purpose.
+         Hence only background-image was overridden, leaving upstream's
+         background-size, background-position and shimmer animation untouched.
 
-         COLOUR CHOICE IS MEASURED, NOT PICKED BY EYE. Every gradient stop must
-         clear WCAG AA 4.5:1 against BOTH backgrounds the label can sit on in its
-         mode (bg-base and bg-layer-1), because the mid-band sweeps through the
-         glyphs — and under prefers-reduced-motion upstream pins background-size to
-         100%, leaving that mid-band permanently inside the text. Measured:
+         ON 0.2 THERE IS NO GRADIENT AND NO 'turnStatus' CLASS. The same label now
+         lives in @deepseek-ai/dsh-client-ui-chat as '<hash>_running' and is
+         masked-sweep text whose only levers are the two
+         --dsw-alias-label-deep-diving* tokens. A rule matching '[class*=
+         "turnStatus"]' can never fire on 0.2, so the recolour is carried by the
+         theme.overrideTokens layer above instead (search for
+         '--dsw-alias-label-deep-diving'). Measured on a real 0.2.0-rc.2 page with
+         the old rules still present: the token kept resolving to the app's own
+         color-mix(in srgb, #101110 70%, #172554) and the label lost the theme
+         colour entirely. test/selector-guard.test.js pins both the 0.2 class hook
+         and the token pair so this cannot silently rot again.
+
+         COLOUR CHOICE IS MEASURED, NOT PICKED BY EYE — and it did not have to be
+         re-derived for 0.2, because both tokens paint glyphs against the SAME two
+         surfaces (bg-base and bg-layer-1), and under prefers-reduced-motion the
+         sweep is effectively held inside the text. Every stop therefore still has
+         to clear WCAG AA 4.5:1 against both. Measured:
            light bg #e8e8e2 / #f2f2ec —  #fff500 scores 1.02:1 (invisible; the naive
              "just make it yellow" reading of this request), #8f7c00 3.38, #7d6c00
-             4.25, and #6b5d00 5.35 is the FIRST gold that clears AA;
-           dark  bg #101110 / #181a18 —  #fff500 15.26, #a08a00 5.11, while #8f7c00
-             falls to 4.21 and fails.
+             4.25, and #6b5d00 5.35 is the FIRST gold that clears AA (mid #3f3600
+             9.82);
+           dark  bg #101110 / #181a18 —  #fff500 15.26 (mid #a08a00 5.11), while
+             #8f7c00 falls to 4.21 and fails.
          Hence the sweep DIPS deeper in both modes instead of lifting brighter:
          in light mode no gold above #6b5d00 can clear AA, and in dark mode a pale
          lift band desaturates to near-white and loses the yellow entirely.
          Light mode is a deep gold rather than signal yellow for the same reason the
          watermark and rail are not: on cream, #fff500 is not a colour choice, it is
-         an erasure. */
-      body [class*='turnStatus']:not([class*='turnStatusClock']) {
-        background-image: linear-gradient(90deg,
-          var(--edge-status-light) 0%, var(--edge-status-light) 40%, var(--edge-status-light-mid) 50%, var(--edge-status-light) 60%, var(--edge-status-light) 100%) !important;
-      }
-      body[data-ds-dark-theme] [class*='turnStatus']:not([class*='turnStatusClock']) {
-        background-image: linear-gradient(90deg,
-          var(--edge-status-dark) 0%, var(--edge-status-dark) 40%, var(--edge-status-dark-mid) 50%, var(--edge-status-dark) 60%, var(--edge-status-dark) 100%) !important;
-      }
+         an erasure. The 武陵青 palette swaps both stops to its own teal pair
+         (#006a6a / #003f3f light, #14d0d0 / #7ee7e7 dark) by redefining
+         --edge-status-* in its body class, so the palette flip re-resolves the
+         tokens with no JS repaint — the same var() trick as --dsw-alias-brand-primary. */
       /* ================= boot loading screen ================= */
       /* Fixed plate above everything, including the shell overlay layer. It exists
          only while the boot animation plays and is removed afterwards, so none of
@@ -3534,10 +6598,13 @@ function apply(ctx) {
         inset: 0;
         z-index: 2147483000;
         background: #101110;
-        /* Not inherited from the app: the plate can paint before tokens resolve. */
+        /* Not inherited from the app: the plate can paint before tokens resolve,
+           and since the theme stopped overriding the root font token it must not
+           depend on inheritance for its face either. Both the family and the
+           openType features are declared here rather than globally. */
         color: #f5f5f0;
-        font-family: Arial, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
-        font-feature-settings: "tnum" 1;
+        font-family: var(--edge-font);
+        font-feature-settings: "tnum" 1, "ss01" 1;
         overflow: hidden;
         /* Never trap the user: even mid-animation the app underneath stays usable. */
         pointer-events: none;
@@ -3835,6 +6902,17 @@ function apply(ctx) {
       /* Reduced motion is handled in finish(), which skips the sweep/fade entirely
          and removes the plate outright; nothing here needs to disable a transition,
          since the plate no longer declares one. */
+      /* Settings page root (the settings.section slot's own wrapper div, the one
+         element of that panel this theme gets to name). Declaring the theme face
+         here means every row, hint and button inside it inherits it BY
+         CONSTRUCTION, without touching the app's root font token. The class is
+         stable and additive, so it is safe to target. It also carries no colours:
+         the panel keeps taking its ink and surfaces from app tokens, which is
+         what keeps it readable on both schemes and with the theme switched off
+         (see test/settings-off.test.js). */
+      .endfield-settings {
+        font-family: var(--edge-font);
+      }
       /* Settings page group headers (rendered by the settings.section slot).
          The label is accent ink that stays AA on both surfaces: light mode uses
          the darkened accent stops (--edge-status-light: #6b5d00 / #006a6a),
@@ -3965,8 +7043,350 @@ function apply(ctx) {
           transform: none;
         }
       }
+
+      /* ---------- 顶部余额胶囊 ----------
+         The reference HUD plate: a near-black stadium/pill — BOTH ends fully
+         rounded (radius = half the height), independent of the theme's
+         直角/圆角 setting because the reference capsule itself is always a
+         pill. Sits at the TOP CENTER of the frame, below the window chrome,
+         over the header — which is why it is pointer-events:none (a caption,
+         not a control: the same discipline as the thunder plate above) and
+         why its z-index stops short of the app's own modals.
+
+         Layout is traced 1:1 off the reference capsule: a white three-layer
+         square mark (a fabricated glyph would be tofu on machines without that
+         face), the ¥ money big and white, the countdown run small and grey —
+         「低谷时段剩余42:08:13」, with the 高峰/低谷 label INSIDE that grey run
+         so the countdown's subject travels with it — then 「低谷已过33%」 pushed
+         to the right end by the auto margin, and a round dial closing the pill.
+
+         The dial is the one piece that carries a value: a dark disc (a shade
+         deeper than the pill, so it reads as inset), an accent ring swept
+         clockwise from 12 o'clock for the elapsed share of the window, and an
+         accent clock face whose needle points at ~1 o'clock. The ring is a
+         conic-gradient masked down to a 4px band, so a tick writes ONE custom
+         property (--endfield-balance-sweep) and never touches a node. */
+      [data-endfield-balance] {
+        position: fixed;
+        top: 6px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 900;
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        /* The reference pill is a 448x48 stadium; rebuilt at 32px tall with the
+           same 9.3:1 proportion it reads as a slim chip next to the header tabs
+           instead of a slab across them. The min-width holds the wide gap
+           between the countdown and the elapsed read, and the min() keeps a
+           narrow window from being overrun: min-width beats max-width in CSS,
+           so a bare 300px would win even against calc(100vw - 16px). */
+        min-width: min(300px, calc(100vw - 16px));
+        max-width: calc(100vw - 16px);
+        height: 32px;
+        padding: 0 1px 0 14px;
+        border-radius: 999px;
+        background: #312f30;
+        color: #f1f1ec;
+        font-family: var(--edge-font);
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1;
+        letter-spacing: 0.01em;
+        pointer-events: none;
+        user-select: none;
+        white-space: nowrap;
+        /* Boot pose -> balance row. Only the box moves (height, width floor,
+           padding) and the two contents cross-fade in place, so the collapse
+           reads as ONE object changing shape instead of two layouts swapping. */
+        transition:
+          height 420ms cubic-bezier(0.22, 0.72, 0.2, 1),
+          min-width 420ms cubic-bezier(0.22, 0.72, 0.2, 1),
+          padding 420ms cubic-bezier(0.22, 0.72, 0.2, 1),
+          border-radius 420ms cubic-bezier(0.22, 0.72, 0.2, 1);
+      }
+      /* Boot pose: the brand panel from the reference — 448x72 with a 14px
+         radius — held while the first account answer is still in flight. JS
+         drops the attribute once the balance lands (or the cap expires) and the
+         pill animates down into its row. The radius itself is written inline by
+         JS: the theme's zero-radius pass is author !important, so only an
+         inline priority declaration can hand the pose its 14px and then the
+         stadium value back. */
+      [data-endfield-balance][data-endfield-balance-boot] {
+        height: 72px;
+        min-width: min(448px, calc(100vw - 16px));
+        padding: 0 22px;
+      }
+      /* The rows keep their layout under the brand block (opacity only), so the
+         collapse never reflows twice. */
+      [data-endfield-balance][data-endfield-balance-boot] > :not([data-endfield-balance-brand]) {
+        opacity: 0;
+        transition: opacity 170ms linear;
+      }
+      [data-endfield-balance-brand] {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 0;
+        bottom: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        /* Measured off the reference: the mark and the copy sit 30px apart, and
+           the lockup as a whole rides 28px left of centre (hence the padding on
+           the right, which leaves centring — and its narrow-window behaviour —
+           intact). */
+        gap: 30px;
+        padding-right: 56px;
+        opacity: 0;
+        transition: opacity 220ms linear;
+        pointer-events: none;
+      }
+      [data-endfield-balance][data-endfield-balance-boot] [data-endfield-balance-brand] {
+        opacity: 1;
+      }
+      /* Same concentric-square mark as the capsule icon, but on a disc — the
+         brand pose shows the round lockup, the collapsed row the square one. */
+      [data-endfield-balance-brand-mark] {
+        position: relative;
+        flex: none;
+        width: 24px;
+        height: 24px;
+        border-radius: 999px;
+        background: #f1f1ec;
+      }
+      [data-endfield-balance-brand-mark]::before {
+        content: '';
+        position: absolute;
+        inset: 5px;
+        border-radius: 2px;
+        background: #312f30;
+      }
+      [data-endfield-balance-brand-mark]::after {
+        content: '';
+        position: absolute;
+        inset: 9px;
+        border-radius: 1px;
+        background: #f1f1ec;
+      }
+      [data-endfield-balance-brand-copy] {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+      }
+      /* Tracked-out uppercase is how this theme draws a technical label (the
+         loader kicker does the same), so the brand line stays in --edge-font
+         rather than importing a second family for one row. */
+      [data-endfield-balance-brand-kicker] {
+        font-size: 9px;
+        font-weight: 500;
+        letter-spacing: 0.02em;
+        color: #8d8c88;
+        white-space: nowrap;
+      }
+      [data-endfield-balance-brand-title] {
+        font-size: 22px;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+        color: #f1f1ec;
+        white-space: nowrap;
+      }
+      /* Three concentric squares, measured off the reference at 16x: a 14px
+         white rounded square, a 6px dark core punched into it, and a 3px white
+         pip at the centre — all pseudo-elements, no glyph and no image. */
+      [data-endfield-balance] [data-endfield-balance-icon] {
+        position: relative;
+        flex: none;
+        width: 10px;
+        height: 10px;
+        margin-right: 4px;
+        border-radius: 3px;
+        background: #f1f1ec;
+      }
+      [data-endfield-balance] [data-endfield-balance-icon]::before {
+        content: '';
+        position: absolute;
+        inset: 2px;
+        border-radius: 2px;
+        background: #312f30;
+      }
+      [data-endfield-balance] [data-endfield-balance-icon]::after {
+        content: '';
+        position: absolute;
+        inset: 3.5px;
+        border-radius: 1px;
+        background: #f1f1ec;
+      }
+      /* ¥ + integer + fraction are one unbroken run: the reference has no gap
+         between the sign and the digits, so the group owns the baseline. */
+      [data-endfield-balance] [data-endfield-balance-money] {
+        display: inline-flex;
+        align-items: baseline;
+        flex: none;
+      }
+      [data-endfield-balance] [data-endfield-balance-currency],
+      [data-endfield-balance] [data-endfield-balance-int] {
+        font-size: 14px;
+        font-weight: 700;
+        color: #f1f1ec;
+        /* Tabular figures on the element itself — never a global font/font-family
+           declaration (see docs/engineering-notes.md: the :root font incident). */
+        font-variant-numeric: tabular-nums;
+        font-feature-settings: 'tnum' 1, 'ss01' 1;
+      }
+      [data-endfield-balance] [data-endfield-balance-frac] {
+        font-size: 9px;
+        font-weight: 600;
+        color: #a2a1a2;
+        font-variant-numeric: tabular-nums;
+      }
+      /* ---------- 渠道额度 group (dsh-codearts-auth) ----------
+         The wallet and the channel read occupy the same visual slot, so they
+         are two exclusive states of one pill, switched by the
+         data-endfield-credit-mode attribute: 'wallet' (default — DeepSeek
+         numbers) hides the channel group, 'credits' hides the wallet group.
+         Attribute-driven, not class-driven, so no per-poll class churn and
+         the markup owns both halves up front. The pricing window and the
+         elapsed-pct read are wallet-only for the same reason the money group
+         is: peak/off-peak is a DeepSeek API concept, and in credits mode the
+         right-hand slot shows the channel's consumption share instead. */
+      [data-endfield-balance] [data-endfield-credit-money] {
+        display: none;
+        align-items: baseline;
+        flex: none;
+      }
+      [data-endfield-balance] [data-endfield-credit-pct] {
+        display: none;
+        margin-left: auto;
+        font-size: 13px;
+        font-weight: 700;
+        color: #f1f1ec;
+        font-variant-numeric: tabular-nums;
+      }
+      [data-endfield-balance][data-endfield-credit-mode='credits'] [data-endfield-balance-money],
+      [data-endfield-balance][data-endfield-credit-mode='credits'] [data-endfield-balance-window],
+      [data-endfield-balance][data-endfield-credit-mode='credits'] [data-endfield-balance-pct] {
+        display: none;
+      }
+      [data-endfield-balance][data-endfield-credit-mode='credits'] [data-endfield-credit-money] {
+        display: inline-flex;
+      }
+      [data-endfield-balance][data-endfield-credit-mode='credits'] [data-endfield-credit-pct] {
+        display: inline;
+      }
+      [data-endfield-balance] [data-endfield-credit-channel] {
+        margin-right: 5px;
+        font-size: 9px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        color: #8d8c88;
+        white-space: nowrap;
+      }
+      [data-endfield-balance] [data-endfield-credit-int] {
+        font-size: 14px;
+        font-weight: 700;
+        color: #f1f1ec;
+        font-variant-numeric: tabular-nums;
+        font-feature-settings: 'tnum' 1, 'ss01' 1;
+      }
+      [data-endfield-balance] [data-endfield-credit-unit] {
+        margin-left: 3px;
+        font-size: 9px;
+        font-weight: 600;
+        color: #a2a1a2;
+      }
+      /* 低谷时段剩余hh:mm:ss — one grey caption, not three tokens. */
+      [data-endfield-balance] [data-endfield-balance-window] {
+        font-size: 9px;
+        font-weight: 500;
+        color: #a2a1a2;
+      }
+      [data-endfield-balance] [data-endfield-balance-phase] {
+        color: inherit;
+      }
+      /* Off-peak is the cheap window; a peak label is the one thing the user
+         should be able to catch out of the corner of an eye, so it turns
+         accent. */
+      [data-endfield-balance] [data-endfield-balance-phase][data-endfield-balance-phase-peak='1'] {
+        color: var(--edge-accent);
+      }
+      [data-endfield-balance] [data-endfield-balance-remain] {
+        font-variant-numeric: tabular-nums;
+      }
+      /* The elapsed read: money-sized and white, held at the right end by the
+         auto margin that swallows the pill's free space. */
+      [data-endfield-balance] [data-endfield-balance-pct] {
+        margin-left: auto;
+        font-size: 13px;
+        font-weight: 700;
+        color: #f1f1ec;
+        font-variant-numeric: tabular-nums;
+      }
+      /* Measured gap from the reference: the elapsed read stops 14px short of the
+         dial, which the pill's own gap alone does not cover. */
+      [data-endfield-balance] [data-endfield-balance-badge] {
+        position: relative;
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        margin-left: 3px;
+        width: 27px;
+        height: 27px;
+        border-radius: 999px;
+        background: #262425;
+      }
+      /* Progress ring: the accent segment covers the elapsed share starting at
+         12 o'clock; the mask keeps only the outer 4px band. */
+      [data-endfield-balance] [data-endfield-balance-ring] {
+        position: absolute;
+        inset: 1.5px;
+        border-radius: 999px;
+        background: conic-gradient(
+          from 0deg,
+          var(--edge-accent) 0deg var(--endfield-balance-sweep, 0deg),
+          transparent var(--endfield-balance-sweep, 0deg) 360deg
+        );
+        -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+        mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+      }
+      [data-endfield-balance] [data-endfield-balance-clock] {
+        position: relative;
+        width: 12px;
+        height: 12px;
+        border-radius: 999px;
+        background: var(--edge-accent);
+      }
+      /* The needle: hangs from the face's centre up to ~1 o'clock, in the
+         disc's own dark so it reads as a hole cut in the accent. */
+      [data-endfield-balance] [data-endfield-balance-clock]::after {
+        content: '';
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 1.5px;
+        height: 3px;
+        margin: -3px 0 0 -0.75px;
+        border-radius: 1px;
+        background: #262425;
+        transform: rotate(25deg);
+        transform-origin: 50% 100%;
+      }
+      /* Narrow windows: the countdown is the least load-bearing read of the
+         three, so it is the one that yields before a nowrap overflow can push
+         the dial and the elapsed share off the right edge. The breakpoint sits
+         just under the pill's natural 300px + 16px slack, so the reference
+         layout is untouched at every width it actually fits in. */
+      @media (max-width: 316px) {
+        [data-endfield-balance] [data-endfield-balance-window] {
+          display: none;
+        }
+      }
     `)
       syncRadiusMode()
+      syncGlass()
       syncPaletteClass()
     }
     const unmount = () => {
@@ -3984,6 +7404,7 @@ function apply(ctx) {
            isWulingPalette() report a palette the page is no longer using. The
            stored preference is untouched, so re-enabling restores it. */
         document.body.classList.remove(PALETTE_CLASS)
+        document.body.removeAttribute?.('data-endfield-glass')
       }
       // The plate is styled by the theme stylesheet just torn down — an orphaned
       // plate would sit there as an unstyled black-less div, so drop it too.
@@ -3992,17 +7413,31 @@ function apply(ctx) {
       // transparency rules it depends on both live in that stylesheet, so leaving
       // it mounted would drop two raw canvases into the app's layout flow.
       contourTeardown()
-      // Same for the custom background image layer, which is also styled and
-      // positioned entirely by that stylesheet.
-      bgImageTeardown()
-      navBgImageTeardown()
-      if (typeof document !== 'undefined' && document.body !== null) document.body.classList.remove(BG_ACTIVE_CLASS)
       /* The announcement plate is styled entirely by that stylesheet too, so an
          in-flight word would become an unstyled, un-positioned block of text in the
          document flow. Stop watching as well: with the theme off there is nothing to
          announce into. */
       thunderStopWatch()
       destroyThunder()
+      /* The watermark must go with the stylesheet too, and it cannot wait for
+         syncWatermarkVisibility(): with the sheet torn down its
+         `opacity: var(--edge-wm-alpha)` computes invalid and falls back to 1,
+         so an orphaned mark sits on the page as a fully opaque 9.5vw ENDFIELD.
+         This path also runs when the switch is turned off from ANOTHER window
+         (reconcileFromPrefs -> unmount), where nothing else removes the node —
+         the local toggle path only looked covered because toggleTheme happened
+         to call syncWatermarkVisibility() itself. */
+      if (watermarkRaf !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(watermarkRaf)
+      watermarkRaf = null
+      if (watermarkEl !== null && watermarkEl.parentNode) watermarkEl.parentNode.removeChild(watermarkEl)
+      watermarkEl = null
+      watermarkHost = null
+      // The attention poll belongs to the themed, audio-enabled page; leaving it
+      // running would keep reporting confirmations for a theme that is off.
+      stopAudioAttentionWatch()
+      // Same for the balance capsule: its poll and its node both live inside the
+      // themed page, and its styles were just torn down with the sheet above.
+      destroyBalanceCapsule()
     }
 
     if (isEnabled()) {
@@ -4012,14 +7447,60 @@ function apply(ctx) {
       // frame to exist; syncContour is a no-op until both are true and the
       // watermark's MutationObserver retries it as the app renders.
       syncContour()
-      syncBgImage()
-      syncNavBgImage()
       // Boot animation: only on a real page load, only when switched on, and only
       // after the stylesheet above exists (mount() inserted it).
       if (isLoaderOn()) runLoader()
       // Task announcements: subscribes only while switched on, and the first value
       // it reads is a baseline, so enabling mid-turn stays silent.
       syncThunder()
+      // 需要你回应: starts only while the theme and the audio feature are both on.
+      syncAudioAttentionWatch()
+      // 顶部余额胶囊: mounts only while its own switch is on, and polls the
+      // host-side balance route only while mounted.
+      syncBalanceCapsule()
+    }
+
+    /* Live preference reconciler. The namespace scope subscription in the store
+       block near the top of apply() calls this every time an authoritative
+       section change lands (our own committed writes echo back, another window /
+       device edits the same profile's settings document
+       (<profile>/cordis.patch.yml on 0.1.7, <dshHome>/settings.yaml before it),
+       or the host reverts a value). It mirrors the initial mount block above so a
+       runtime change re-paints exactly the live surfaces it can: the master switch mounts/unmounts
+       the token + stylesheet layers, then radius/palette/watermark/contour/
+       thunder re-derive from the new value. The boot loader is deliberately not
+       replayed here: it is a once-per-page-load plate, so a mid-session section
+       change must not slam a startup animation over a running app. The one thing
+       that DOES start it outside apply() is the first authoritative settle
+       (onPrefsSettled) — that is the same page-load moment, not a later edit — plus
+       the plate's own toggle and 预览 button. Every layer entry point is idempotent
+       (mount() and unmount() guard on `mounted`, syncContour is a no-op until the
+       frame and stylesheet exist), so repeated echoes are cheap and safe. */
+    reconcileFromPrefs = () => {
+      const enabledNext = isEnabled()
+      const enabledNow = mounted
+      if (enabledNext && !enabledNow) mount()
+      else if (!enabledNext && enabledNow) unmount()
+      if (enabledNext) {
+        // These sync helpers read the store on each call, so no snapshot passing.
+        syncRadiusMode()
+        syncGlass()
+        syncPaletteClass()
+        syncWatermarkVisibility()
+        syncContour()
+        syncThunder()
+        // Same reason: it re-reads both switches and starts or stops the poll.
+        syncAudioAttentionWatch()
+        // Same reason: it re-reads its switch and mounts or removes the capsule.
+        syncBalanceCapsule()
+      } else {
+        // Switched off mid-session: the watcher must not keep polling a page the
+        // theme no longer owns.
+        stopAudioAttentionWatch()
+        // And the capsule must not keep polling the balance route on an unthemed
+        // page — destroyBalanceCapsule also clears its interval.
+        destroyBalanceCapsule()
+      }
     }
 
     /* ---------- Settings page copy: zh / en dictionaries ----------
@@ -4074,12 +7555,20 @@ function apply(ctx) {
       contourOff: '关闭背景',
       contourHintOn: '当前配色的地形等高线铺满界面底层（置于所有内容之下）',
       contourHintOff: '默认关闭；开启后在界面底层绘制等高线地形纹理',
+      contourTrailRow: '鼠标轨迹',
+      contourTrailOn: '开启轨迹',
+      contourTrailOff: '关闭轨迹',
+      contourTrailHint: '鼠标移动时局部扰动等高线并逐渐恢复；仅动态模式生效，静态或减少动态效果时暂停',
       contourAnimRow: '动态等高线',
       contourAnimOn: '开启动态',
       contourAnimOff: '切为静态',
       contourAnimHintOn: '等高线缓慢流动变形（可选 24 / 60 / 120 FPS，关闭后为静态图案）',
       contourAnimHintOff: '静态等高线，不做任何逐帧计算',
       contourAnimHintReduced: '系统已开启「减少动态效果」，当前保持静态',
+      glassRow: '磨砂玻璃', glassHint: '仅输入框和停靠面板使用局部模糊；侧栏保持静态质感',
+      glassOff: '关闭', glassSubtle: '轻度', glassStandard: '标准', glassStrong: '浓厚',
+      contourRendererRow: '等高线绘制', contourRendererCanvas: 'Canvas', contourRendererWorker: 'Worker / WebGL',
+      contourRendererHint: '实验性后台绘制；不支持时自动回退，适合对照滚动性能',
       contourFpsRow: '动态帧率',
       contourFpsHint: '选择等高线动画的刷新档位',
       contourFpsUnit: 'FPS',
@@ -4094,46 +7583,6 @@ function apply(ctx) {
       contourScrollPauseHintOn: '滚动上下文窗口时暂停等高线动画，停止滚动后约 10ms 恢复',
       contourScrollPauseHintOff: '警告：关闭后可能出现滚动卡顿',
       contourAnimNeedLayer: '请先开启等高线背景',
-      bgImageRow: '全局背景图（整页）',
-      bgImageOn: '开启背景',
-      bgImageOff: '关闭背景',
-      bgImageHintOn: '整页铺满自定义背景图（可调遮罩强度保证可读性）',
-      bgImageHintOff: '默认关闭；开启后可填写图片地址或上传本地图片',
-      bgImageNeedUrl: '请先填写图片地址或上传图片',
-      bgImageSourceRow: '背景图片来源',
-      bgImageUrlPlaceholder: 'https://... 或 dataURL',
-      bgImageApply: '应用',
-      bgImageUpload: '上传图片',
-      bgImageClear: '清除',
-      bgImageMaskRow: '背景遮罩强度',
-      bgImageMaskHint: '0=原图；数值越高越接近界面底色，文字更易读',
-      bgImageFitRow: '背景填充方式',
-      bgImageFitCover: '填充',
-      bgImageFitContain: '包含',
-      bgImageFitHint: '选择图片铺满屏幕或完整显示',
-      bgImageErrorQuota: '图片太大，无法保存（请改用图片 URL）',
-      bgImageErrorType: '请选择图片文件',
-      navBgImageRow: '导航区背景图',
-      navBgImageOn: '开启导航背景',
-      navBgImageOff: '关闭导航背景',
-      navBgImageHintOn: '在左导航区覆盖一张独立背景图（未开启时沿用整页背景）',
-      navBgImageHintOff: '默认关闭；开启后可填写图片地址或上传本地图片',
-      navBgImageNeedUrl: '请先填写导航区图片地址或上传图片',
-      navBgImageSourceRow: '导航图来源',
-      navBgImageUrlPlaceholder: 'https://... 或 dataURL',
-      navBgImageApply: '应用',
-      navBgImageUpload: '上传图片',
-      navBgImageClear: '清除',
-      navBgImageOpacityRow: '导航图不透明度',
-      navBgImageOpacityHint: '0=完全透明（显示整页背景）；100=完全显示导航图',
-      navBgImageMaskRow: '导航图遮罩强度',
-      navBgImageMaskHint: '0=原图；数值越高越接近界面底色，文字更易读',
-      navBgImageFitRow: '导航图填充方式',
-      navBgImageFitCover: '填充',
-      navBgImageFitContain: '包含',
-      navBgImageFitHint: '选择导航图铺满导航区或完整显示',
-      navBgImageErrorQuota: '图片太大，无法保存（请改用图片 URL）',
-      navBgImageErrorType: '请选择图片文件',
       watermarkRow: '背景水印',
       watermarkOn: '开启水印',
       watermarkOff: '关闭水印',
@@ -4143,6 +7592,26 @@ function apply(ctx) {
       wmPersistHintOn: '在对话等非新建会话页面也显示水印（置于正文之下）',
       wmPersistHintOff: '仅在新建会话页显示水印',
       wmPersistNeedWm: '请先开启背景水印',
+      /* LOCAL PATCH: 自定义背景图 */
+      bgImageRow: '自定义背景图',
+      bgImageOn: '开启背景图',
+      bgImageOff: '关闭背景图',
+      bgImageUrlLabel: '图片地址',
+      bgImageUrlHint: '支持 URL 或本机图片（存为 dataURL）。留空则不生效。',
+      bgImageMaskLabel: '遮罩强度',
+      bgImageFitLabel: '填充方式',
+      bgImageFitCover: '填充',
+      bgImageFitContain: '包含',
+      bgImagePick: '选择图片',
+      bgImageClear: '清除',
+      bgImageNeedUrl: '请先填写图片地址',
+      navBgImageRow: '导航区背景图',
+      navBgImageOn: '开启导航图',
+      navBgImageOff: '关闭导航图',
+      navBgImageUrlHint: '不开启时沿用整页背景图。',
+      navBgImageOpacityLabel: '不透明度',
+      navBgImageMaskLabel: '遮罩强度',
+      bgImageFontNote: '大图建议用 URL：dataURL 过大时无法写入设置。',
       loaderRow: '启动加载动画',
       loaderOn: '开启动画',
       loaderOff: '关闭动画',
@@ -4162,6 +7631,76 @@ function apply(ctx) {
       thunderAnimHintOn: '大字由大缩小砸入并淡出（关闭后为直接显示，仍保持 3 秒）',
       thunderAnimHintOff: '默认关闭；大字直接出现、3 秒后消失，不做缩放与淡入淡出',
       thunderAnimHintReduced: '系统已开启「减少动态效果」，当前直接显示',
+      /* 顶部余额胶囊：数据由宿主路由代理（页面拿不到账户凭证），所以提示里
+          说明「余额来自本机服务」而不是承诺实时精确。 */
+      balanceRow: '顶部余额胶囊',
+      balanceOn: '开启余额胶囊',
+      balanceOff: '关闭余额胶囊',
+      balanceHintOn: '在页面顶部中间悬浮显示账户余额与峰谷定价时段（每分钟刷新余额，时段倒计时每秒走字；右侧「预览」可重播开场动画）',
+      balanceHintOff: '默认关闭；开启后悬浮显示余额与峰谷时段（高峰为工作日 9-12 点、14-18 点；周末、法定节假日全天、以及落在周末的调休上班日都按低谷半价）',
+      balanceNeed: '请先开启顶部余额胶囊',
+      creditDisplayRow: '渠道额度读数',
+      creditDisplayRemaining: '剩余',
+      creditDisplayUsed: '已用',
+      creditDisplayHintRemaining: '渠道模式右侧百分比显示「剩余xx%」（剩余/总额度），圆环同步走剩余份额；主数字始终为剩余额度。需渠道报出总额度，否则右侧留空。切换后下次取数生效',
+      creditDisplayHintUsed: '渠道模式右侧百分比显示「已用xx%」（已用/总额度），圆环同步走已用份额；主数字始终为剩余额度。需渠道报出总额度，否则右侧留空。切换后下次取数生效',
+      /* 音频通知：播放发生在宿主进程（lib/audio.js），所以这里的每一行都在
+         说明「什么时候响」而不是「怎么响」；试听按钮走宿主真实播放链路。 */
+      groupAudio: '音频',
+      audioRow: '音频通知',
+      audioOn: '开启提示音',
+      audioOff: '关闭提示音',
+      audioHintOn: '由宿主进程播放，页面最小化或切到别的应用时同样能听到',
+      audioHintOff: '默认关闭；开启后按下面的开关出声（也可以只留想要的几个）',
+      audioBootRow: '启动加载动画音',
+      audioBootOn: '开启',
+      audioBootOff: '关闭',
+      audioBootHint: '播放 ENDFIELD 加载板时响一次；只认真正的页面加载，点「预览」重播不会响',
+      audioStartRow: '任务开始音',
+      audioStartOn: '开启',
+      audioStartOff: '关闭',
+      audioStartHint: '只在你从会话框提交指令后播放（后台唤醒、目标续跑不计）',
+      audioDoneRow: '任务结束音',
+      audioDoneOn: '开启',
+      audioDoneOff: '关闭',
+      audioDoneHint: '只在我产出最终结果后播放；中途报错或等待审批时不出声',
+      audioVolumeRow: '音量',
+      audioVolumeHint: '只缩放提示音本身，不改系统音量',
+      audioSlotStart: '开始',
+      audioSlotDone: '结束',
+      audioSlotBoot: '开机',
+      audioSlotAttention: '待回应',
+      audioSlotFail: '出错',
+      audioSlotQuestion: '提问',
+      audioSlotApproval: '审批',
+      audioSlotUi: '界面',
+      audioAttentionRow: '需要你回应',
+      audioTurnFailRow: '出错提示音',
+      audioReservedHint: '审批请求、我的提问、计划求批都会响',
+      audioReservedNeed: '无事件接线：不需要人工干预的错误保持静音',
+      audioSoundDirRow: '自定义音效目录',
+      audioSoundDirHint: '把 turn-start.wav / turn-done.wav 放进该目录即可覆盖内置音；留空则查工作区与桌面',
+      audioSoundDirDefault: '未设置（用桌面 / 工作区 / 内置音）',
+      audioFileRow: '当前音源',
+      audioFileBundled: '内置合成音',
+      audioFileOwn: '自定义文件',
+      audioFileMissing: '未找到文件',
+      audioHumanOnlyRow: '开始音仅认会话框',
+      audioHumanOnlyOn: '仅会话框',
+      audioHumanOnlyOff: '宽松模式',
+      audioHumanOnlyHintOn: '只认带提交凭据的用户消息，最不容易误触发',
+      audioHumanOnlyHintOff: '任何用户来源消息都算（调试用，后台唤醒可能误响）',
+      audioDiagRow: '诊断日志',
+      audioDiagOn: '开启',
+      audioDiagOff: '关闭',
+      audioDiagHint: '在宿主控制台与 /theme-endfield/audio/state 记录每次事件判定',
+      audioTest: '试听',
+      audioTestPlaying: '播放中…',
+      audioTestOk: '已交由宿主播放',
+      audioTestFail: '宿主未播放',
+      audioTestOff: '请先开启音频通知',
+      audioNeedOn: '请先开启音频通知',
+      audioRefresh: '刷新状态',
     }
     const LOCALE_EN = {
       nav: 'Endfield Theme',
@@ -4194,12 +7733,20 @@ function apply(ctx) {
       contourOff: 'Turn off',
       contourHintOn: 'Topographic contour lines fill the lowest layer, beneath all content',
       contourHintOff: 'Off by default; draws a contour terrain texture behind the interface',
+      contourTrailRow: 'Mouse trail',
+      contourTrailOn: 'Enable trail',
+      contourTrailOff: 'Disable trail',
+      contourTrailHint: 'Locally deforms contours near the mouse, then fades; pauses in static or reduced-motion mode',
       contourAnimRow: 'Animated contours',
       contourAnimOn: 'Animate',
       contourAnimOff: 'Make static',
       contourAnimHintOn: 'The field drifts at 24, 60 or 120 FPS (static pattern when off)',
       contourAnimHintOff: 'Static contours, with no per-frame work at all',
       contourAnimHintReduced: 'Your system asks for reduced motion, so it stays static',
+      glassRow: 'Frosted glass', glassHint: 'Local blur on the composer and docked panel; static sidebar texture',
+      glassOff: 'Off', glassSubtle: 'Subtle', glassStandard: 'Standard', glassStrong: 'Strong',
+      contourRendererRow: 'Contour renderer', contourRendererCanvas: 'Canvas', contourRendererWorker: 'Worker / WebGL',
+      contourRendererHint: 'Experimental background rendering with automatic fallback; compare scrolling on your device',
       contourFpsRow: 'Animation frame rate',
       contourFpsHint: 'Choose the contour animation refresh rate',
       contourFpsUnit: 'FPS',
@@ -4214,46 +7761,6 @@ function apply(ctx) {
       contourScrollPauseHintOn: 'Pauses contour animation while scrolling and resumes about 10ms after it stops',
       contourScrollPauseHintOff: 'Warning: scrolling may stutter when this is off',
       contourAnimNeedLayer: 'Turn on the contour background first',
-      bgImageRow: 'Full-page background image',
-      bgImageOn: 'Turn on',
-      bgImageOff: 'Turn off',
-      bgImageHintOn: 'Fills the whole app with your image (adjust the scrim for readability)',
-      bgImageHintOff: 'Off by default; enter an image URL or upload a local image when enabled',
-      bgImageNeedUrl: 'Enter an image URL or upload an image first',
-      bgImageSourceRow: 'Image source',
-      bgImageUrlPlaceholder: 'https://... or data URL',
-      bgImageApply: 'Apply',
-      bgImageUpload: 'Upload image',
-      bgImageClear: 'Clear',
-      bgImageMaskRow: 'Background scrim',
-      bgImageMaskHint: '0 = original image; higher values wash towards the UI base colour for readability',
-      bgImageFitRow: 'Image fit',
-      bgImageFitCover: 'Cover',
-      bgImageFitContain: 'Contain',
-      bgImageFitHint: 'Choose whether the image fills the screen or is shown completely',
-      bgImageErrorQuota: 'Image is too large to save locally (use an image URL instead)',
-      bgImageErrorType: 'Please choose an image file',
-      navBgImageRow: 'Navigation background image',
-      navBgImageOn: 'Turn on',
-      navBgImageOff: 'Turn off',
-      navBgImageHintOn: 'Covers the left navigation with a separate image (off = the full-page image shows through)',
-      navBgImageHintOff: 'Off by default; enter an image URL or upload a local image when enabled',
-      navBgImageNeedUrl: 'Enter a navigation image URL or upload an image first',
-      navBgImageSourceRow: 'Navigation image source',
-      navBgImageUrlPlaceholder: 'https://... or data URL',
-      navBgImageApply: 'Apply',
-      navBgImageUpload: 'Upload image',
-      navBgImageClear: 'Clear',
-      navBgImageOpacityRow: 'Navigation opacity',
-      navBgImageOpacityHint: '0 = fully transparent (shows the full-page image); 100 = fully show the navigation image',
-      navBgImageMaskRow: 'Navigation scrim',
-      navBgImageMaskHint: '0 = original image; higher values wash towards the UI base colour for readability',
-      navBgImageFitRow: 'Navigation image fit',
-      navBgImageFitCover: 'Cover',
-      navBgImageFitContain: 'Contain',
-      navBgImageFitHint: 'Choose whether the navigation image fills the column or is shown completely',
-      navBgImageErrorQuota: 'Image is too large to save locally (use an image URL instead)',
-      navBgImageErrorType: 'Please choose an image file',
       watermarkRow: 'Background wordmark',
       watermarkOn: 'Turn on',
       watermarkOff: 'Turn off',
@@ -4263,6 +7770,26 @@ function apply(ctx) {
       wmPersistHintOn: 'Also shown on conversations and other pages, behind the text',
       wmPersistHintOff: 'Shown only on the new-session screen',
       wmPersistNeedWm: 'Turn on the background wordmark first',
+      /* LOCAL PATCH: custom background image */
+      bgImageRow: 'Custom background image',
+      bgImageOn: 'Turn on',
+      bgImageOff: 'Turn off',
+      bgImageUrlLabel: 'Image URL',
+      bgImageUrlHint: 'A URL or a local file (stored as a dataURL). Empty means off.',
+      bgImageMaskLabel: 'Scrim',
+      bgImageFitLabel: 'Fit',
+      bgImageFitCover: 'Cover',
+      bgImageFitContain: 'Contain',
+      bgImagePick: 'Pick image',
+      bgImageClear: 'Clear',
+      bgImageNeedUrl: 'Set an image URL first',
+      navBgImageRow: 'Navigation image',
+      navBgImageOn: 'Turn on',
+      navBgImageOff: 'Turn off',
+      navBgImageUrlHint: 'Off means the navigation shows the full-page image.',
+      navBgImageOpacityLabel: 'Opacity',
+      navBgImageMaskLabel: 'Scrim',
+      bgImageFontNote: 'Prefer a URL for large images: an oversized dataURL cannot be written to settings.',
       loaderRow: 'Boot animation',
       loaderOn: 'Turn on',
       loaderOff: 'Turn off',
@@ -4282,6 +7809,72 @@ function apply(ctx) {
       thunderAnimHintOn: 'The word punches in from oversized and fades out (appears instantly when off, still held 3s)',
       thunderAnimHintOff: 'Off by default; the word appears instantly and leaves after 3s, with no scaling or fading',
       thunderAnimHintReduced: 'Your system asks for reduced motion, so it appears instantly',
+      balanceRow: 'Balance capsule',
+      balanceOn: 'Turn on',
+      balanceOff: 'Turn off',
+      balanceHintOn: 'Floats a capsule at the top centre of the page showing your account balance and the API peak/off-peak pricing window (balance every minute, window countdown every second; Preview on the right replays the opening animation)',
+      balanceHintOff: 'Off by default; floats a balance + pricing-window capsule (peak = weekdays 9-12 & 14-18 Beijing; weekends, Chinese statutory holidays and make-up workdays that land on a weekend are off-peak, half price)',
+      balanceNeed: 'Turn on the balance capsule first',
+      creditDisplayRow: 'Channel credits readout',
+      creditDisplayRemaining: 'Remaining',
+      creditDisplayUsed: 'Used',
+      creditDisplayHintRemaining: 'In credits mode the right-hand percentage shows the remaining share (of the reported quota) and the ring sweeps that same remaining share; the lead figure always stays the remaining balance. The slot stays empty when the channel reports no quota; the change applies at the next fetch',
+      creditDisplayHintUsed: 'In credits mode the right-hand percentage shows the used share (of the reported quota) and the ring sweeps that same used share; the lead figure always stays the remaining balance. The slot stays empty when the channel reports no quota; the change applies at the next fetch',
+      groupAudio: 'AUDIO',
+      audioRow: 'Audio notifications',
+      audioOn: 'Turn on',
+      audioOff: 'Turn off',
+      audioHintOn: 'Played by the host process, so a minimized page or another app in front still gets the sound',
+      audioHintOff: 'Off by default; turning it on enables the slots below (keep only the ones you want)',
+      audioBootRow: 'Boot animation sound',
+      audioBootOn: 'Turn on',
+      audioBootOff: 'Turn off',
+      audioBootHint: 'Rings once when the ENDFIELD boot plate plays; a real page load only — the Preview button replays it silently',
+      audioStartRow: 'Task-start sound',
+      audioStartOn: 'Turn on',
+      audioStartOff: 'Turn off',
+      audioStartHint: 'Plays only after you submit from the composer (wakeups and goal continuations do not count)',
+      audioDoneRow: 'Task-end sound',
+      audioDoneOn: 'Turn on',
+      audioDoneOff: 'Turn off',
+      audioDoneHint: 'Plays only after the final answer; interrupted turns and approval waits stay silent',
+      audioVolumeRow: 'Volume',
+      audioVolumeHint: 'Rescales only the notification sound, never the system volume',
+      audioSlotStart: 'Start',
+      audioSlotDone: 'Done',
+      audioSlotBoot: 'Boot',
+      audioSlotAttention: 'Attention',
+      audioSlotFail: 'Error',
+      audioSlotQuestion: 'Questions',
+      audioSlotApproval: 'Approvals',
+      audioSlotUi: 'Seen',
+      audioAttentionRow: 'Needs your response',
+      audioTurnFailRow: 'Error sound',
+      audioReservedHint: 'Fires on approval requests, my questions and plan reviews',
+      audioReservedNeed: 'Not wired by design: an error needing no human decision stays silent',
+      audioSoundDirRow: 'Custom sound directory',
+      audioSoundDirHint: 'Drop turn-start.wav / turn-done.wav there to override the built-in tone; blank falls back to the workspace and the Desktop',
+      audioSoundDirDefault: 'Not set (Desktop / workspace / bundled)',
+      audioFileRow: 'Current source',
+      audioFileBundled: 'Bundled synthesized tone',
+      audioFileOwn: 'Your own file',
+      audioFileMissing: 'No file found',
+      audioHumanOnlyRow: 'Start sound: composer only',
+      audioHumanOnlyOn: 'Composer only',
+      audioHumanOnlyOff: 'Loose mode',
+      audioHumanOnlyHintOn: 'Requires the submission credential a real prompt carries — least likely to misfire',
+      audioHumanOnlyHintOff: 'Any user-source message counts (debugging; background wakeups may misfire)',
+      audioDiagRow: 'Diagnostics',
+      audioDiagOn: 'Turn on',
+      audioDiagOff: 'Turn off',
+      audioDiagHint: 'Logs every event verdict to the host console and /theme-endfield/audio/state',
+      audioTest: 'Preview',
+      audioTestPlaying: 'Playing…',
+      audioTestOk: 'Handed to the host',
+      audioTestFail: 'The host did not play it',
+      audioTestOff: 'Turn audio notifications on first',
+      audioNeedOn: 'Turn audio notifications on first',
+      audioRefresh: 'Refresh state',
     }
 
     /* The locale service is optional, exactly like `theme` and `sessions`: the
@@ -4339,37 +7932,125 @@ function apply(ctx) {
           const [loaderOn, setLoaderOn] = R.useState(isLoaderOn())
           const [contourOn, setContourOn] = R.useState(isContourOn())
           const [contourAnim, setContourAnim] = R.useState(isContourAnimOn())
+          const [contourTrailOn, setContourTrailOn] = R.useState(isContourTrailOn())
+          const [contourRenderer, setContourRenderer] = R.useState(readContourRenderer())
           const [contourFps, setContourFps] = R.useState(readContourFps())
           const [contourSpeed, setContourSpeed] = R.useState(readContourSpeed())
           const [contourScrollPause, setContourScrollPause] = R.useState(isContourScrollPauseOn())
-          const [bgImageOn, setBgImageOn] = R.useState(isBgImageOn())
-          const [bgImageDraft, setBgImageDraft] = R.useState(readBgImageUrl())
-          const [bgImageMask, setBgImageMask] = R.useState(readBgImageMask())
-          const [bgImageFit, setBgImageFit] = R.useState(readBgImageFit())
-          const [bgImageError, setBgImageError] = R.useState('')
-          const [navBgImageOn, setNavBgImageOn] = R.useState(isNavBgImageOn())
-          const [navBgImageDraft, setNavBgImageDraft] = R.useState(readNavBgImageUrl())
-          const [navBgImageOpacity, setNavBgImageOpacity] = R.useState(readNavBgImageOpacity())
-          const [navBgImageMask, setNavBgImageMask] = R.useState(readNavBgImageMask())
-          const [navBgImageFit, setNavBgImageFit] = R.useState(readNavBgImageFit())
-          const [navBgImageError, setNavBgImageError] = R.useState('')
           const [thunderOn, setThunderOn] = R.useState(isThunderOn())
           const [thunderAnim, setThunderAnim] = R.useState(isThunderAnimOn())
+          const [balanceOn, setBalanceOn] = R.useState(isBalanceCapsuleOn())
+          const [creditDisplay, setCreditDisplay] = R.useState(readCreditDisplay())
           const [palette, setPalette] = R.useState(readPalette())
-          const [mode, setMode] = R.useState((typeof localStorage !== 'undefined' && localStorage.getItem(RADIUS_KEY)) || 'square')
+          const [glass, setGlass] = R.useState(readGlass())
+          const [mode, setMode] = R.useState(prefsGet(RADIUS_KEY) || 'square')
+          /* 音频通知 is a HOST feature: the browser only owns its switches and
+             the preview buttons. `hostState` mirrors what the host half reports
+             over /theme-endfield/audio/state (which file each slot actually
+             resolved to), so the panel can show the truth instead of assuming
+             the bundled tone is in use. */
+          const [audioOn, setAudioOn] = R.useState(isAudioOn())
+          const [audioBoot, setAudioBoot] = R.useState(isAudioBootOn())
+          const [audioStart, setAudioStart] = R.useState(isAudioStartOn())
+          const [audioDone, setAudioDone] = R.useState(isAudioDoneOn())
+          const [audioVolume, setAudioVolume] = R.useState(readAudioVolume())
+          const [audioHumanOnly, setAudioHumanOnly] = R.useState(isAudioHumanOnly())
+          const [audioDiag, setAudioDiag] = R.useState(isAudioDiagOn())
+          const [hostState, setHostState] = R.useState(null)
+          const [previewNote, setPreviewNote] = R.useState('')
+          const refreshHostState = () => {
+            if (typeof fetch !== 'function') return
+            fetch(AUDIO_STATE_URL, { headers: { accept: 'application/json' } })
+              .then((res) => (res.ok ? res.json() : null))
+              .then((json) => { if (json) setHostState(json) })
+              .catch(() => { /* host bridge absent: the rows simply show no source */ })
+          }
+          /* Re-sync the panel onto the settings section when it finally arrives.
+             Every useState above seeded itself from prefsGet() during the FIRST
+             render — which, on a real page load, happens while the Host is still
+             sending the section, so each read fell back to the schema default.
+             Without this effect the switches stayed frozen at those defaults for
+             the whole session (the theme's own surfaces recovered, because
+             reconcileFromPrefs re-derives them, but the panel's React state had
+             no such path): the user sees their settings "reset after refresh"
+             even though the values were on disk and the theme was applying them.
+
+             Subscribing to the store rather than using the one-shot
+             onPrefsSettled hook is deliberate — that slot is already claimed by
+             the boot loader, and a subscription additionally keeps the panel
+             honest when the Host or another surface changes a value mid-session.
+             prefsEmit runs on every transport snapshot and on every local edit, so
+             this simply re-derives the same reads the initializers used; React
+             bails out of the re-render when a value is unchanged.
+
+             `useEffect` is feature-detected the way the rest of this panel
+             feature-detects React: it must render on a host (or test double)
+             whose React face does not expose the hook rather than throwing
+             during render. Losing the effect only costs the live re-sync, which
+             is no worse than the behaviour before this fix. */
+          if (typeof R.useEffect === 'function') {
+            panelMounted = true
+            /* Re-derive every switch from the store. Kept as one named function so
+               the mount pass and every later subscription event run identical
+               reads — a switch can never be re-synced from a different source
+               than the one the initializers used. */
+            const resyncPanelFromPrefs = () => {
+              setEnabled(isEnabled())
+              setWmOn(isWatermarkOn())
+              setWmPersist(isWatermarkPersistOn())
+              setLoaderOn(isLoaderOn())
+              setContourOn(isContourOn())
+              setContourAnim(isContourAnimOn())
+              setContourTrailOn(isContourTrailOn())
+              setContourRenderer(readContourRenderer())
+              setContourFps(readContourFps())
+              setContourSpeed(readContourSpeed())
+              setContourScrollPause(isContourScrollPauseOn())
+              setThunderOn(isThunderOn())
+              setThunderAnim(isThunderAnimOn())
+              setBalanceOn(isBalanceCapsuleOn())
+              setCreditDisplay(readCreditDisplay())
+              setPalette(readPalette())
+              setGlass(readGlass())
+              setMode(prefsGet(RADIUS_KEY) || 'square')
+              /* The 音频 rows seed themselves from the same store, so they are
+                 re-derived here as well — the section can arrive after the
+                 panel's first render, which would otherwise leave every audio
+                 switch frozen at its schema default for the whole session. */
+              setAudioOn(isAudioOn())
+              setAudioBoot(isAudioBootOn())
+              setAudioStart(isAudioStartOn())
+              setAudioDone(isAudioDoneOn())
+              setAudioVolume(readAudioVolume())
+              setAudioHumanOnly(isAudioHumanOnly())
+              setAudioDiag(isAudioDiagOn())
+            }
+            R.useEffect(() => {
+              /* Subscribe FIRST, then re-derive once. A subscription alone is not
+                 enough: the panel can finish mounting AFTER the section already
+                 settled, in which case the ready transition that would have
+                 notified it has already been emitted and no later event is
+                 guaranteed (the mirror only re-reads on a Host document change or
+                 a reconnect). Running the pass here makes the panel's state
+                 converge whenever it mounts, with no dependence on
+                 having been present for the transition. */
+              const unsubscribe = prefsSubscribe(resyncPanelFromPrefs)
+              resyncPanelFromPrefs()
+              return unsubscribe
+            }, [])
+            // One read per panel mount: the host is the only authority on which
+            // file each slot resolved to, and re-reading on every render would
+            // hammer the route while the user drags the volume slider. Guarded
+            // with the effect above, because the in-process settings tests drive
+            // this panel with a minimal recording React that has no effect hook
+            // at all — an unguarded call would turn "cannot refresh the source
+            // read-out" into "the whole panel throws".
+            R.useEffect(() => { refreshHostState() }, [])
+          }
           const rowStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '12px 0', borderBottom: '1px solid var(--dsw-alias-border-l1)' }
           const labelStyle = { color: 'var(--dsw-alias-label-primary)', fontSize: '13px', fontWeight: 500, lineHeight: '1.5' }
           // Sub-label explaining what a switch does, so the row is self-describing.
           const hintStyle = { display: 'block', color: 'var(--dsw-alias-label-tertiary)', fontSize: '12px', fontWeight: 400, lineHeight: '1.5', marginTop: '2px' }
-          const inputStyle = {
-            flex: '1', minWidth: '0', padding: '6px 8px', fontSize: '12px',
-            color: 'var(--dsw-alias-label-primary)',
-            background: 'var(--dsw-alias-bg-layer-1)',
-            border: '1px solid var(--dsw-alias-border-l2)',
-            borderRadius: mode === 'round' ? '999px' : '0',
-            outline: 'none',
-          }
-          const errorStyle = { display: 'block', color: 'var(--dsw-alias-danger, #e5484d)', fontSize: '12px', fontWeight: 400, lineHeight: '1.5', marginTop: '2px' }
           const btnStyleFor = (on, disabled) => {
             /* The switches are themed BY the theme they configure, so while the
                theme is ON the "on" fill reads from the palette variable rather
@@ -4399,11 +8080,42 @@ function apply(ctx) {
               whiteSpace: 'nowrap',
             }
           }
+          const setGlassValue = (value) => {
+            if (!GLASS_OPTIONS.includes(value)) return
+            prefsSet(GLASS_KEY, value)
+            setGlass(value)
+            syncGlass()
+          }
+          const setContourRendererValue = (value) => {
+            if (value !== 'canvas' && value !== 'worker-webgl') return
+            prefsSet(CONTOUR_RENDERER_KEY, value)
+            setContourRenderer(value)
+            syncContour()
+          }
+          /* ---------- toggles ----------
+             EVERY handler below derives its `next` value from the STORE
+             (prefsGet / the is* / read* readers), never from the React state
+             variable of the same name. Those two can disagree, and when they do
+             the toggle writes the WRONG value to the durable section:
+
+               - the initial useState(readPalette()) runs while the Host section
+                 is still 'loading', so it seeds the schema DEFAULT;
+               - the mount effect re-derives it, but that pass and any later
+                 subscription pass only run on a store event, so a panel that
+                 mounted mid-transition can still be showing a default;
+               - prefsGetValue overlays prefsLocalEdited on top of the fetched
+                 section, so the store and the rendered switch are two different
+                 reads by construction.
+
+             Reading the store here makes the click a decision about the CURRENT
+             durable value rather than about whatever the last render happened to
+             capture, so a stale panel can no longer persist a default over a
+             real choice. The state setter still runs, so the UI follows. */
           const toggleTheme = () => {
-            const next = !enabled
-            if (typeof localStorage !== 'undefined') localStorage.setItem(ENABLED_KEY, next ? '1' : '0')
+            const next = !isEnabled()
+            prefsSet(ENABLED_KEY, next ? '1' : '0')
             setEnabled(next)
-            if (next) { mount(); syncWatermarkVisibility(); syncContour(); syncBgImage(); syncNavBgImage() }
+            if (next) { mount(); syncWatermarkVisibility(); syncContour() }
             else { unmount(); syncWatermarkVisibility() }
             /* The announcement watcher is gated on the master switch too, so it has
                to be reconciled here. unmount() already stops it, but turning the
@@ -4412,206 +8124,10 @@ function apply(ctx) {
             syncThunder()
           }
           const toggleContour = () => {
-            const next = !contourOn
-            if (typeof localStorage !== 'undefined') localStorage.setItem(CONTOUR_KEY, next ? '1' : '0')
+            const next = !isContourOn()
+            prefsSet(CONTOUR_KEY, next ? '1' : '0')
             setContourOn(next)
             syncContour()
-          }
-          const toggleBgImage = () => {
-            const next = !bgImageOn
-            if (next && readBgImageUrl() === '') {
-              setBgImageError(t('bgImageNeedUrl'))
-              return
-            }
-            if (typeof localStorage !== 'undefined') localStorage.setItem(BG_IMAGE_ON_KEY, next ? '1' : '0')
-            setBgImageOn(next)
-            if (next) syncBgImage()
-            else { bgImageTeardown(); syncBgImageActiveClass() }
-          }
-          const commitBgImageDraft = () => {
-            const value = bgImageDraft.trim()
-            if (value === '') {
-              setBgImageError(t('bgImageNeedUrl'))
-              return
-            }
-            try {
-              if (typeof localStorage !== 'undefined') localStorage.setItem(BG_IMAGE_URL_KEY, value)
-              setBgImageError('')
-              syncBgImage()
-            } catch (e) {
-              setBgImageError(t('bgImageErrorQuota'))
-            }
-          }
-          const pickBgImageFile = () => {
-            if (typeof document === 'undefined') return
-            const input = document.createElement('input')
-            input.type = 'file'
-            input.accept = 'image/*'
-            input.onchange = () => {
-              const file = input.files !== null && input.files.length > 0 ? input.files[0] : null
-              if (file === null) return
-              if (!file.type || file.type.indexOf('image/') !== 0) {
-                setBgImageError(t('bgImageErrorType'))
-                return
-              }
-              const reader = new FileReader()
-              reader.onload = () => {
-                const data = typeof reader.result === 'string' ? reader.result : ''
-                if (data === '') {
-                  setBgImageError(t('bgImageErrorType'))
-                  return
-                }
-                setBgImageDraft(data)
-                try {
-                  if (typeof localStorage !== 'undefined') localStorage.setItem(BG_IMAGE_URL_KEY, data)
-                  setBgImageError('')
-                  syncBgImage()
-                } catch (e) {
-                  setBgImageError(t('bgImageErrorQuota'))
-                }
-              }
-              reader.onerror = () => setBgImageError(t('bgImageErrorType'))
-              reader.readAsDataURL(file)
-            }
-            if (document.body !== null) {
-              document.body.appendChild(input)
-              input.click()
-              if (typeof setTimeout === 'function') setTimeout(() => { if (input.parentNode) input.parentNode.removeChild(input) }, 0)
-            } else {
-              input.click()
-            }
-          }
-          const clearBgImage = () => {
-            try {
-              if (typeof localStorage !== 'undefined') {
-                localStorage.removeItem(BG_IMAGE_URL_KEY)
-                if (bgImageOn) localStorage.setItem(BG_IMAGE_ON_KEY, '0')
-              }
-              setBgImageDraft('')
-              setBgImageError('')
-              if (bgImageOn) setBgImageOn(false)
-              bgImageTeardown()
-              syncBgImageActiveClass()
-            } catch (e) {
-              setBgImageError(t('bgImageErrorQuota'))
-            }
-          }
-          const setBgImageMaskValue = (value) => {
-            const parsed = Number(value)
-            const next = Number.isFinite(parsed)
-              ? Math.min(BG_IMAGE_MASK_MAX, Math.max(BG_IMAGE_MASK_MIN, Math.round(parsed)))
-              : BG_IMAGE_MASK_DEFAULT
-            if (typeof localStorage !== 'undefined') localStorage.setItem(BG_IMAGE_MASK_KEY, String(next))
-            setBgImageMask(next)
-            if (bgImageWrap !== null) applyBgImageStyles()
-          }
-          const setBgImageFitValue = (value) => {
-            if (BG_IMAGE_FIT_OPTIONS.indexOf(value) === -1) return
-            if (typeof localStorage !== 'undefined') localStorage.setItem(BG_IMAGE_FIT_KEY, value)
-            setBgImageFit(value)
-            if (bgImageWrap !== null) applyBgImageStyles()
-          }
-          const toggleNavBgImage = () => {
-            const next = !navBgImageOn
-            if (next && readNavBgImageUrl() === '') {
-              setNavBgImageError(t('navBgImageNeedUrl'))
-              return
-            }
-            if (typeof localStorage !== 'undefined') localStorage.setItem(NAV_BG_IMAGE_ON_KEY, next ? '1' : '0')
-            setNavBgImageOn(next)
-            if (next) syncNavBgImage()
-            else navBgImageTeardown()
-          }
-          const commitNavBgImageDraft = () => {
-            const value = navBgImageDraft.trim()
-            if (value === '') {
-              setNavBgImageError(t('navBgImageNeedUrl'))
-              return
-            }
-            try {
-              if (typeof localStorage !== 'undefined') localStorage.setItem(NAV_BG_IMAGE_URL_KEY, value)
-              setNavBgImageError('')
-              syncNavBgImage()
-            } catch (e) {
-              setNavBgImageError(t('navBgImageErrorQuota'))
-            }
-          }
-          const pickNavBgImageFile = () => {
-            if (typeof document === 'undefined') return
-            const input = document.createElement('input')
-            input.type = 'file'
-            input.accept = 'image/*'
-            input.onchange = () => {
-              const file = input.files !== null && input.files.length > 0 ? input.files[0] : null
-              if (file === null) return
-              if (!file.type || file.type.indexOf('image/') !== 0) {
-                setNavBgImageError(t('navBgImageErrorType'))
-                return
-              }
-              const reader = new FileReader()
-              reader.onload = () => {
-                const data = typeof reader.result === 'string' ? reader.result : ''
-                if (data === '') {
-                  setNavBgImageError(t('navBgImageErrorType'))
-                  return
-                }
-                setNavBgImageDraft(data)
-                try {
-                  if (typeof localStorage !== 'undefined') localStorage.setItem(NAV_BG_IMAGE_URL_KEY, data)
-                  setNavBgImageError('')
-                  syncNavBgImage()
-                } catch (e) {
-                  setNavBgImageError(t('navBgImageErrorQuota'))
-                }
-              }
-              reader.onerror = () => setNavBgImageError(t('navBgImageErrorType'))
-              reader.readAsDataURL(file)
-            }
-            if (document.body !== null) {
-              document.body.appendChild(input)
-              input.click()
-              if (typeof setTimeout === 'function') setTimeout(() => { if (input.parentNode) input.parentNode.removeChild(input) }, 0)
-            } else {
-              input.click()
-            }
-          }
-          const clearNavBgImage = () => {
-            try {
-              if (typeof localStorage !== 'undefined') {
-                localStorage.removeItem(NAV_BG_IMAGE_URL_KEY)
-                if (navBgImageOn) localStorage.setItem(NAV_BG_IMAGE_ON_KEY, '0')
-              }
-              setNavBgImageDraft('')
-              setNavBgImageError('')
-              if (navBgImageOn) setNavBgImageOn(false)
-              navBgImageTeardown()
-            } catch (e) {
-              setNavBgImageError(t('navBgImageErrorQuota'))
-            }
-          }
-          const setNavBgImageOpacityValue = (value) => {
-            const parsed = Number(value)
-            const next = Number.isFinite(parsed)
-              ? Math.min(NAV_BG_IMAGE_OPACITY_MAX, Math.max(NAV_BG_IMAGE_OPACITY_MIN, Math.round(parsed)))
-              : NAV_BG_IMAGE_OPACITY_DEFAULT
-            if (typeof localStorage !== 'undefined') localStorage.setItem(NAV_BG_IMAGE_OPACITY_KEY, String(next))
-            setNavBgImageOpacity(next)
-            if (navBgImageWrap !== null) applyNavBgImageStyles()
-          }
-          const setNavBgImageMaskValue = (value) => {
-            const parsed = Number(value)
-            const next = Number.isFinite(parsed)
-              ? Math.min(NAV_BG_IMAGE_MASK_MAX, Math.max(NAV_BG_IMAGE_MASK_MIN, Math.round(parsed)))
-              : NAV_BG_IMAGE_MASK_DEFAULT
-            if (typeof localStorage !== 'undefined') localStorage.setItem(NAV_BG_IMAGE_MASK_KEY, String(next))
-            setNavBgImageMask(next)
-            if (navBgImageWrap !== null) applyNavBgImageStyles()
-          }
-          const setNavBgImageFitValue = (value) => {
-            if (NAV_BG_IMAGE_FIT_OPTIONS.indexOf(value) === -1) return
-            if (typeof localStorage !== 'undefined') localStorage.setItem(NAV_BG_IMAGE_FIT_KEY, value)
-            setNavBgImageFit(value)
-            if (navBgImageWrap !== null) applyNavBgImageStyles()
           }
           /* Palette switch. Everything visual is carried by the class flip inside
              syncPaletteClass(); the only thing that needs explicit work is the
@@ -4619,15 +8135,21 @@ function apply(ctx) {
              The redraw is called directly rather than left to the MutationObserver
              so the sheet changes in the same frame as the rest of the UI. */
           const togglePalette = () => {
-            const next = palette === 'wuling' ? 'valley' : 'wuling'
-            if (typeof localStorage !== 'undefined') localStorage.setItem(PALETTE_KEY, next)
+            const next = readPalette() === 'wuling' ? 'valley' : 'wuling'
+            prefsSet(PALETTE_KEY, next)
             setPalette(next)
             syncPaletteClass()
-            if (contourWrap !== null) contourDrawLines()
+            if (contourWrap !== null) contourRefresh(false)
+          }
+          const toggleContourTrail = () => {
+            const next = !isContourTrailOn()
+            prefsSet(CONTOUR_TRAIL_KEY, next ? '1' : '0')
+            setContourTrailOn(next)
+            syncContour()
           }
           const toggleContourAnim = () => {
-            const next = !contourAnim
-            if (typeof localStorage !== 'undefined') localStorage.setItem(CONTOUR_ANIM_KEY, next ? '1' : '0')
+            const next = !isContourAnimOn()
+            prefsSet(CONTOUR_ANIM_KEY, next ? '1' : '0')
             setContourAnim(next)
             if (!next) {
               contourScrollPaused = false
@@ -4639,18 +8161,18 @@ function apply(ctx) {
           const setContourFpsValue = (value) => {
             const next = Number(value)
             if (!CONTOUR_FPS_OPTIONS.includes(next)) return
-            if (typeof localStorage !== 'undefined') localStorage.setItem(CONTOUR_FPS_KEY, String(next))
+            prefsSet(CONTOUR_FPS_KEY, String(next))
             setContourFps(next)
           }
           const setContourSpeedValue = (value) => {
             const next = Number(value)
             if (!CONTOUR_SPEED_OPTIONS.includes(next)) return
-            if (typeof localStorage !== 'undefined') localStorage.setItem(CONTOUR_SPEED_KEY, String(next))
+            prefsSet(CONTOUR_SPEED_KEY, String(next))
             setContourSpeed(next)
           }
           const toggleContourScrollPause = () => {
-            const next = !contourScrollPause
-            if (typeof localStorage !== 'undefined') localStorage.setItem(CONTOUR_SCROLL_PAUSE_KEY, next ? '1' : '0')
+            const next = !isContourScrollPauseOn()
+            prefsSet(CONTOUR_SCROLL_PAUSE_KEY, next ? '1' : '0')
             setContourScrollPause(next)
             if (!next) {
               contourScrollPaused = false
@@ -4661,37 +8183,132 @@ function apply(ctx) {
             }
           }
           const toggleWm = () => {
-            const next = !wmOn
-            if (typeof localStorage !== 'undefined') localStorage.setItem(WATERMARK_KEY, next ? '1' : '0')
+            const next = !isWatermarkOn()
+            prefsSet(WATERMARK_KEY, next ? '1' : '0')
             setWmOn(next)
             syncWatermarkVisibility()
           }
           const toggleWmPersist = () => {
-            const next = !wmPersist
-            if (typeof localStorage !== 'undefined') localStorage.setItem(WATERMARK_PERSIST_KEY, next ? '1' : '0')
+            const next = !isWatermarkPersistOn()
+            prefsSet(WATERMARK_PERSIST_KEY, next ? '1' : '0')
             setWmPersist(next)
             syncWatermarkVisibility()
           }
           const toggleLoader = () => {
-            const next = !loaderOn
-            if (typeof localStorage !== 'undefined') localStorage.setItem(LOADER_KEY, next ? '1' : '0')
+            const next = !isLoaderOn()
+            prefsSet(LOADER_KEY, next ? '1' : '0')
             setLoaderOn(next)
             // Turning it on plays it once right away, so the switch shows what it
             // bought instead of making the user reload to find out.
             if (next) { loaderDone = false; destroyLoader(); runLoader() }
             else destroyLoader()
           }
+      /* ---------- LOCAL PATCH: custom background image (panel handlers) ----------
+         Every `next` below is derived from the STORE (isBgImageOn / readBgImage*),
+         never from a React state variable — the panel's own state seeds from the
+         schema DEFAULT while the Host section is still 'loading', so a
+         state-derived `next` writes the wrong value to the durable section. That is
+         the same trap the upstream rows are written against. */
+      const setBgImageUrl = (value) => {
+        prefsSet(BG_IMAGE_URL_KEY, value)
+        syncBgImage()
+      }
+      const setNavBgImageUrl = (value) => {
+        prefsSet(NAV_BG_IMAGE_URL_KEY, value)
+        syncNavBgImage()
+      }
+      const toggleBgImage = () => {
+        const next = !isBgImageOn()
+        prefsSet(BG_IMAGE_ON_KEY, next ? '1' : '0')
+        if (next) syncBgImage()
+        else { bgImageTeardown(); syncBgImageActiveClass() }
+      }
+      const toggleNavBgImage = () => {
+        const next = !isNavBgImageOn()
+        prefsSet(NAV_BG_IMAGE_ON_KEY, next ? '1' : '0')
+        if (next) syncNavBgImage()
+        else navBgImageTeardown()
+      }
+      const setBgImageMask = (value) => {
+        const next = Math.min(BG_IMAGE_MASK_MAX, Math.max(BG_IMAGE_MASK_MIN, Math.round(Number(value))))
+        if (!Number.isFinite(next)) return
+        prefsSet(BG_IMAGE_MASK_KEY, String(next))
+        applyBgImageStyles()
+      }
+      const setNavBgImageOpacity = (value) => {
+        const next = Math.min(NAV_BG_IMAGE_OPACITY_MAX, Math.max(NAV_BG_IMAGE_OPACITY_MIN, Math.round(Number(value))))
+        if (!Number.isFinite(next)) return
+        prefsSet(NAV_BG_IMAGE_OPACITY_KEY, String(next))
+        applyNavBgImageStyles()
+      }
+      const setNavBgImageMask = (value) => {
+        const next = Math.min(NAV_BG_IMAGE_MASK_MAX, Math.max(NAV_BG_IMAGE_MASK_MIN, Math.round(Number(value))))
+        if (!Number.isFinite(next)) return
+        prefsSet(NAV_BG_IMAGE_MASK_KEY, String(next))
+        applyNavBgImageStyles()
+      }
+      const setBgImageFit = (value) => {
+        if (BG_IMAGE_FIT_OPTIONS.indexOf(value) === -1) return
+        prefsSet(BG_IMAGE_FIT_KEY, value)
+        applyBgImageStyles()
+      }
+      const setNavBgImageFit = (value) => {
+        if (NAV_BG_IMAGE_FIT_OPTIONS.indexOf(value) === -1) return
+        prefsSet(NAV_BG_IMAGE_FIT_KEY, value)
+        applyNavBgImageStyles()
+      }
+      const clearBgImage = () => {
+        prefsSet(BG_IMAGE_URL_KEY, '')
+        prefsSet(BG_IMAGE_ON_KEY, '0')
+        bgImageTeardown()
+        syncBgImageActiveClass()
+      }
+      const clearNavBgImage = () => {
+        prefsSet(NAV_BG_IMAGE_URL_KEY, '')
+        prefsSet(NAV_BG_IMAGE_ON_KEY, '0')
+        navBgImageTeardown()
+      }
+      /* A file picker writes a dataURL into the same field a pasted URL uses.
+         localStorage is not the backing store any more, so the quota that used to
+         bite here is now the schema section — a huge dataURL simply fails to
+         write, and the row says so rather than silently dropping the picture. */
+      const pickImageInto = (apply) => {
+        if (typeof document === 'undefined') return
+        const input = document.createElement('input')
+        /* The file picker is a convenience, not the feature: a host whose
+           createElement returns a stub (the test harness does) or that has no
+           FileReader must still be able to paste a URL by hand. Bail out
+           quietly instead of throwing on the click. */
+        if (!input || typeof input.addEventListener !== 'function') return
+        if (typeof FileReader === 'undefined') return
+        input.type = 'file'
+        input.accept = 'image/*'
+        input.addEventListener('change', () => {
+          const file = input.files && input.files[0]
+          if (!file) return
+          const reader = new FileReader()
+          reader.addEventListener('load', () => {
+            const data = typeof reader.result === 'string' ? reader.result : ''
+            if (data !== '') apply(data)
+          })
+          reader.readAsDataURL(file)
+        })
+        input.click()
+      }
+      const pickBgImageFile = () => pickImageInto(setBgImageUrl)
+      const pickNavBgImageFile = () => pickImageInto(setNavBgImageUrl)
+
           const replayLoader = () => {
             loaderDone = false
             destroyLoader()
             runLoader()
           }
           const toggleThunder = () => {
-            const next = !thunderOn
-            if (typeof localStorage !== 'undefined') localStorage.setItem(THUNDER_KEY, next ? '1' : '0')
+            const next = !isThunderOn()
+            prefsSet(THUNDER_KEY, next ? '1' : '0')
             setThunderOn(next)
-            /* syncThunder() reads storage, so the write above is what it acts on.
-               Turning it ON also shows the word once: a switch whose effect only
+            /* syncThunder() reads the pref store, so the write above is what it acts
+               on. Turning it ON also shows the word once: a switch whose effect only
                appears at some unpredictable later moment gives the user no way to
                tell whether it worked. The preview runs BEFORE the watcher attaches,
                so it cannot be mistaken for a real edge. */
@@ -4700,9 +8317,43 @@ function apply(ctx) {
             syncThunder()
           }
           const previewThunder = () => { showThunder(THUNDER_DONE) }
+          const toggleBalanceCapsule = () => {
+            const next = !isBalanceCapsuleOn()
+            prefsSet(BALANCE_KEY, next ? '1' : '0')
+            setBalanceOn(next)
+            /* syncBalanceCapsule() reads the pref store, so the write above is what
+               it acts on. Turning it ON mounts the capsule immediately: the first
+               fetch fires inside showBalanceCapsule, so the numbers appear within
+               one round-trip instead of after an arbitrary delay. */
+            syncBalanceCapsule()
+          }
+          /* 已用 / 剩余 is a select, not a toggle: the two values are answers to
+             "what does the right-hand percentage read", not polarities of one
+             switch, and a two-state toggle button cannot show which side is
+             live the way the row's 状态 label does. Mirrors setGlassValue:
+             validate, persist, then mirror into React state. The capsule
+             repaints on the NEXT fetch — creditsApply reads the pref store per
+             answer, so no forced RPC is spent on a cosmetic re-read (the 5-min
+             floor stays honest). */
+          const CREDIT_DISPLAY_OPTIONS = ['remaining', 'used']
+          const setCreditDisplayValue = (value) => {
+            if (CREDIT_DISPLAY_OPTIONS.indexOf(value) === -1) return
+            prefsSet(CREDIT_DISPLAY_KEY, value)
+            setCreditDisplay(value)
+          }
+          /* 预览: the opening pose is a one-shot moment — a real load shows it once
+             and there is no reload button on the settings page. Remounting the
+             capsule is the whole preview: destroyBalanceCapsule() clears the timers
+             and the node, and the forced show re-runs the brand pose followed by the
+             same collapse into the balance row the real load performs. */
+          const previewBalanceBoot = () => {
+            if (!isEnabled() || !isBalanceCapsuleOn()) return
+            destroyBalanceCapsule()
+            showBalanceCapsule(true)
+          }
           const toggleThunderAnim = () => {
-            const next = !thunderAnim
-            if (typeof localStorage !== 'undefined') localStorage.setItem(THUNDER_ANIM_KEY, next ? '1' : '0')
+            const next = !isThunderAnimOn()
+            prefsSet(THUNDER_ANIM_KEY, next ? '1' : '0')
             setThunderAnim(next)
             /* Nothing to reconcile: the next showThunder() reads the switch and marks
                the plate accordingly. Replaying now is what makes the change legible —
@@ -4711,11 +8362,120 @@ function apply(ctx) {
             showThunder(THUNDER_START)
           }
           const toggleMode = () => {
-            const next = mode === 'round' ? 'square' : 'round'
-            if (typeof localStorage !== 'undefined') localStorage.setItem(RADIUS_KEY, next)
+            const next = (prefsGet(RADIUS_KEY) || 'square') === 'round' ? 'square' : 'round'
+            prefsSet(RADIUS_KEY, next)
             setMode(next)
             if (next === 'round') document.body.classList.add('theme-endfield-round')
             else document.body.classList.remove('theme-endfield-round')
+          }
+          /* ---------- 音频通知 handlers ----------
+             A switch writes its field and updates local state; the host half
+             watches the same namespace, so the next event uses the new value
+             without a reload. The preview buttons deliberately do NOT play
+             anything in the browser: they ask the host, so what you hear while
+             testing is exactly what a real notification will sound like. */
+          const showPreviewNote = (result) => {
+            if (result && result.played) setPreviewNote(t('audioTestOk'))
+            else setPreviewNote(t('audioTestFail') + (result && result.why ? '：' + result.why : ''))
+          }
+          const playPreview = (slot) => { previewSlot(slot).then(showPreviewNote) }
+          const audioTestButton = (slot, labelKey) => R.createElement('button', {
+            key: 'audio-test-' + slot,
+            type: 'button',
+            onClick: () => playPreview(slot),
+            style: btnStyleFor(false, !audioOn),
+            // Previewing while the master switch is off is refused by the host
+            // (volume 0 / disabled), so the button says why instead of failing
+            // silently.
+            disabled: !audioOn,
+            title: audioOn ? '' : t('audioNeedOn'),
+          }, t('audioTest') + ' · ' + t(labelKey))
+          const toggleAudio = () => {
+            const next = !audioOn
+            prefsSet(AUDIO_ENABLED_KEY, next ? '1' : '0')
+            setAudioOn(next)
+            // The attention watcher is gated on this switch, so it has to be
+            // reconciled here as well as on the pref echo.
+            syncAudioAttentionWatch()
+            if (next) playPreview('turn-done')
+          }
+          const toggleAudioStart = () => {
+            const next = !audioStart
+            prefsSet(AUDIO_TURN_START_KEY, next ? '1' : '0')
+            setAudioStart(next)
+            if (next) playPreview('turn-start')
+          }
+          const toggleAudioBoot = () => {
+            const next = !audioBoot
+            prefsSet(AUDIO_BOOT_KEY, next ? '1' : '0')
+            setAudioBoot(next)
+            // Preview the boot slot itself: the real one fires from the loader,
+            // which is awkward to re-trigger from here.
+            if (next) playPreview('boot')
+          }
+          const toggleAudioDone = () => {
+            const next = !audioDone
+            prefsSet(AUDIO_TURN_DONE_KEY, next ? '1' : '0')
+            setAudioDone(next)
+            if (next) playPreview('turn-done')
+          }
+          const setAudioVolumeValue = (next) => {
+            const clamped = Math.min(100, Math.max(0, Math.round(next)))
+            prefsSet(AUDIO_VOLUME_KEY, String(clamped))
+            setAudioVolume(clamped)
+          }
+          const toggleAudioHumanOnly = () => {
+            const next = !audioHumanOnly
+            prefsSet(AUDIO_HUMAN_ONLY_KEY, next ? '1' : '0')
+            setAudioHumanOnly(next)
+          }
+          const toggleAudioDiag = () => {
+            const next = !audioDiag
+            prefsSet(AUDIO_DIAG_KEY, next ? '1' : '0')
+            setAudioDiag(next)
+          }
+          const applySoundDir = (value) => {
+            const text = typeof value === 'string' ? value.trim() : ''
+            prefsSet(AUDIO_SOUND_DIR_KEY, text)
+            refreshHostState()
+          }
+          /** The host's view of one slot, or undefined while it has not answered. */
+          const slotState = (slot) => {
+            if (hostState === null || !Array.isArray(hostState.slots)) return undefined
+            return hostState.slots.find((entry) => entry.id === slot)
+          }
+          // The two reserved rows have no switch, so their value read-out reports
+          // whether the SOUND is previewable instead of pretending to be a toggle.
+          const audioTestReady = () => (hostState === null ? true : slotState('attention') !== undefined)
+          const sourceSummary = () => {
+            const done = slotState('turn-done')
+            if (done === undefined) return '—'
+            if (done.file === null) return t('audioFileMissing')
+            return done.bundled ? t('audioFileBundled') : t('audioFileOwn')
+          }
+          const sourceDetail = () => {
+            const rows = []
+            for (const slot of ['boot', 'turn-start', 'turn-done']) {
+              const state = slotState(slot)
+              const name = slot === 'boot' ? t('audioSlotBoot') : slot === 'turn-start' ? t('audioSlotStart') : t('audioSlotDone')
+              rows.push(name + t('sep') + (state === undefined || state.file === null ? t('audioFileMissing') : state.file))
+            }
+            /* How many intervention requests this host half has actually seen.
+               Without it, "no sound" cannot distinguish "the event never reached
+               the plugin" from "the plugin chose to stay silent" — the two are
+               indistinguishable from the page. Re-open this page (or press 刷新)
+               after answering a question to watch the counter move. */
+            if (hostState !== null && hostState.attention !== undefined) {
+              rows.push(t('audioAttentionRow') + t('sep')
+                + t('audioSlotUi') + ' ' + String(hostState.attention.ui)
+                + ' / ' + t('audioSlotQuestion') + ' ' + String(hostState.attention.question)
+                + ' / ' + t('audioSlotApproval') + ' ' + String(hostState.attention.approval))
+            }
+            if (hostState !== null && Array.isArray(hostState.log) && hostState.log.length > 0) {
+              const last = hostState.log[hostState.log.length - 1]
+              rows.push(t('audioDiagRow') + t('sep') + last.kind + (last.detail ? ' ' + last.detail : ''))
+            }
+            return rows.join('　·　')
           }
           const pageStyle = { maxWidth: '640px', padding: '4px 0 16px' }
           /* The ten switches are grouped into four concerns so the page can be
@@ -4753,7 +8513,7 @@ function apply(ctx) {
           /** "<row label>: <on|off>" — one spelling for every status row. */
           const stateOf = (on) => t(on ? 'on' : 'off')
           const row = (key, last, children) => R.createElement('div', { key, style: last ? { ...rowStyle, borderBottom: 'none' } : rowStyle }, children)
-          return R.createElement('div', { style: pageStyle }, [
+          return R.createElement('div', { className: 'endfield-settings', style: pageStyle }, [
             /* --- 01 主题：总开关在最前，随后是配色与圆角 --- */
             R.createElement('div', { key: 'group-theme' }, [
               groupTitle('01', 'groupTheme', true),
@@ -4790,6 +8550,17 @@ function apply(ctx) {
                     style: btnStyleFor(true),
                   }, t(palette === 'wuling' ? 'paletteToValley' : 'paletteToWuling'))
                 )
+              ]),
+              row('glass', false, [
+                R.createElement('span', { style: labelStyle }, t('glassRow'),
+                  R.createElement('span', { style: hintStyle }, t('glassHint'))),
+                R.createElement('select', {
+                  'aria-label': t('glassRow'), value: glass,
+                  onChange: (event) => setGlassValue(event.target.value),
+                  style: { color: 'var(--dsw-alias-label-primary)', background: 'var(--dsw-alias-bg-layer-1)',
+                    border: '1px solid var(--dsw-alias-border-l2)', padding: '6px 10px' },
+                }, GLASS_OPTIONS.map((value) => R.createElement('option', { key: value, value },
+                  t({ off: 'glassOff', subtle: 'glassSubtle', standard: 'glassStandard', strong: 'glassStrong' }[value]))))
               ]),
               row('radius', true, [
                 R.createElement('span', { style: labelStyle }, t('radiusRow') + t('sep') + t(mode === 'round' ? 'radiusRound' : 'radiusSquare')),
@@ -4828,6 +8599,27 @@ function apply(ctx) {
                   disabled: !contourOn,
                   title: contourOn ? '' : t('contourAnimNeedLayer'),
                 }, t(contourAnim ? 'contourAnimOff' : 'contourAnimOn'))
+              ]),
+              row('contour-trail', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('contourTrailRow') + t('sep') + stateOf(contourTrailOn),
+                  R.createElement('span', { style: hintStyle }, t('contourTrailHint'))
+                ),
+                R.createElement('button', {
+                  type: 'button', onClick: toggleContourTrail,
+                  style: btnStyleFor(contourTrailOn, !contourOn), disabled: !contourOn,
+                  title: contourOn ? '' : t('contourAnimNeedLayer'),
+                }, t(contourTrailOn ? 'contourTrailOff' : 'contourTrailOn'))
+              ]),
+              row('contour-renderer', false, [
+                R.createElement('span', { style: labelStyle }, t('contourRendererRow'),
+                  R.createElement('span', { style: hintStyle }, t('contourRendererHint'))),
+                R.createElement('select', { 'aria-label': t('contourRendererRow'), value: contourRenderer,
+                  onChange: (event) => setContourRendererValue(event.target.value),
+                  style: { color: 'var(--dsw-alias-label-primary)', background: 'var(--dsw-alias-bg-layer-1)',
+                    border: '1px solid var(--dsw-alias-border-l2)', padding: '6px 10px' } },
+                  R.createElement('option', { value: 'canvas' }, t('contourRendererCanvas')),
+                  R.createElement('option', { value: 'worker-webgl' }, t('contourRendererWorker')))
               ]),
               row('contour-fps', false, [
                 R.createElement('span', { style: labelStyle },
@@ -4876,190 +8668,6 @@ function apply(ctx) {
                   title: contourOn ? '' : t('contourAnimNeedLayer'),
                 }, t(contourScrollPause ? 'contourScrollPauseOff' : 'contourScrollPauseOn'))
               ]),
-              row('bg-image', false, [
-                R.createElement('span', { style: labelStyle },
-                  t('bgImageRow') + t('sep') + stateOf(bgImageOn),
-                  R.createElement('span', { style: hintStyle },
-                    t(bgImageOn ? 'bgImageHintOn' : 'bgImageHintOff')
-                  )
-                ),
-                R.createElement('button', {
-                  type: 'button',
-                  onClick: toggleBgImage,
-                  style: btnStyleFor(bgImageOn),
-                }, t(bgImageOn ? 'bgImageOff' : 'bgImageOn'))
-              ]),
-              row('bg-image-source', false, [
-                R.createElement('span', { style: labelStyle },
-                  t('bgImageSourceRow'),
-                  R.createElement('span', { style: hintStyle }, t('bgImageUrlPlaceholder')),
-                  bgImageError !== '' ? R.createElement('span', { style: errorStyle }, bgImageError) : null
-                ),
-                R.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', flex: '1', maxWidth: '360px' } }, [
-                  R.createElement('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, [
-                    R.createElement('input', {
-                      type: 'text',
-                      value: bgImageDraft,
-                      placeholder: t('bgImageUrlPlaceholder'),
-                      onChange: (e) => setBgImageDraft(e.target.value),
-                      style: inputStyle,
-                      disabled: !enabled,
-                    }),
-                    R.createElement('button', {
-                      type: 'button',
-                      onClick: commitBgImageDraft,
-                      style: btnStyleFor(false, !enabled),
-                      disabled: !enabled,
-                      title: !enabled ? '' : (readBgImageUrl() === '' ? t('bgImageNeedUrl') : ''),
-                    }, t('bgImageApply')),
-                    R.createElement('button', {
-                      type: 'button',
-                      onClick: pickBgImageFile,
-                      style: btnStyleFor(false, !enabled),
-                      disabled: !enabled,
-                      title: !enabled ? '' : (readBgImageUrl() === '' ? t('bgImageNeedUrl') : ''),
-                    }, t('bgImageUpload')),
-                    R.createElement('button', {
-                      type: 'button',
-                      onClick: clearBgImage,
-                      style: btnStyleFor(false, !enabled),
-                      disabled: !enabled,
-                    }, t('bgImageClear')),
-                  ])
-                ])
-              ]),
-              row('bg-image-mask', false, [
-                R.createElement('span', { style: labelStyle },
-                  t('bgImageMaskRow') + t('sep') + bgImageMask + '%',
-                  R.createElement('span', { style: hintStyle }, t('bgImageMaskHint'))
-                ),
-                R.createElement('input', {
-                  type: 'range',
-                  min: BG_IMAGE_MASK_MIN,
-                  max: BG_IMAGE_MASK_MAX,
-                  step: 5,
-                  value: bgImageMask,
-                  onChange: (e) => setBgImageMaskValue(e.target.value),
-                  disabled: !bgImageOn,
-                  style: { width: '160px' },
-                })
-              ]),
-              row('bg-image-fit', false, [
-                R.createElement('span', { style: labelStyle },
-                  t('bgImageFitRow') + t('sep') + t(bgImageFit === 'contain' ? 'bgImageFitContain' : 'bgImageFitCover'),
-                  R.createElement('span', { style: hintStyle }, t('bgImageFitHint'))
-                ),
-                R.createElement('span', { style: { display: 'flex', gap: '4px', flex: '0 0 auto' } },
-                  ...BG_IMAGE_FIT_OPTIONS.map((fit) => R.createElement('button', {
-                    key: 'bg-fit-' + fit,
-                    type: 'button',
-                    onClick: () => setBgImageFitValue(fit),
-                    style: btnStyleFor(bgImageFit === fit, !bgImageOn),
-                    disabled: !bgImageOn,
-                    title: bgImageOn ? '' : t('bgImageNeedUrl'),
-                  }, t(fit === 'contain' ? 'bgImageFitContain' : 'bgImageFitCover')))
-                )
-              ]),
-              row('nav-bg-image', false, [
-                R.createElement('span', { style: labelStyle },
-                  t('navBgImageRow') + t('sep') + stateOf(navBgImageOn),
-                  R.createElement('span', { style: hintStyle },
-                    t(navBgImageOn ? 'navBgImageHintOn' : 'navBgImageHintOff')
-                  )
-                ),
-                R.createElement('button', {
-                  type: 'button',
-                  onClick: toggleNavBgImage,
-                  style: btnStyleFor(navBgImageOn),
-                }, t(navBgImageOn ? 'navBgImageOff' : 'navBgImageOn'))
-              ]),
-              row('nav-bg-image-source', false, [
-                R.createElement('span', { style: labelStyle },
-                  t('navBgImageSourceRow'),
-                  R.createElement('span', { style: hintStyle }, t('navBgImageUrlPlaceholder')),
-                  navBgImageError !== '' ? R.createElement('span', { style: errorStyle }, navBgImageError) : null
-                ),
-                R.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', flex: '1', maxWidth: '360px' } }, [
-                  R.createElement('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, [
-                    R.createElement('input', {
-                      type: 'text',
-                      value: navBgImageDraft,
-                      placeholder: t('navBgImageUrlPlaceholder'),
-                      onChange: (e) => setNavBgImageDraft(e.target.value),
-                      style: inputStyle,
-                      disabled: !enabled,
-                    }),
-                    R.createElement('button', {
-                      type: 'button',
-                      onClick: commitNavBgImageDraft,
-                      style: btnStyleFor(false, !enabled),
-                      disabled: !enabled,
-                      title: !enabled ? '' : (readNavBgImageUrl() === '' ? t('navBgImageNeedUrl') : ''),
-                    }, t('navBgImageApply')),
-                    R.createElement('button', {
-                      type: 'button',
-                      onClick: pickNavBgImageFile,
-                      style: btnStyleFor(false, !enabled),
-                      disabled: !enabled,
-                      title: !enabled ? '' : (readNavBgImageUrl() === '' ? t('navBgImageNeedUrl') : ''),
-                    }, t('navBgImageUpload')),
-                    R.createElement('button', {
-                      type: 'button',
-                      onClick: clearNavBgImage,
-                      style: btnStyleFor(false, !enabled),
-                      disabled: !enabled,
-                    }, t('navBgImageClear')),
-                  ])
-                ])
-              ]),
-              row('nav-bg-image-opacity', false, [
-                R.createElement('span', { style: labelStyle },
-                  t('navBgImageOpacityRow') + t('sep') + navBgImageOpacity + '%',
-                  R.createElement('span', { style: hintStyle }, t('navBgImageOpacityHint'))
-                ),
-                R.createElement('input', {
-                  type: 'range',
-                  min: NAV_BG_IMAGE_OPACITY_MIN,
-                  max: NAV_BG_IMAGE_OPACITY_MAX,
-                  step: 5,
-                  value: navBgImageOpacity,
-                  onChange: (e) => setNavBgImageOpacityValue(e.target.value),
-                  disabled: !navBgImageOn,
-                  style: { width: '160px' },
-                })
-              ]),
-              row('nav-bg-image-mask', false, [
-                R.createElement('span', { style: labelStyle },
-                  t('navBgImageMaskRow') + t('sep') + navBgImageMask + '%',
-                  R.createElement('span', { style: hintStyle }, t('navBgImageMaskHint'))
-                ),
-                R.createElement('input', {
-                  type: 'range',
-                  min: NAV_BG_IMAGE_MASK_MIN,
-                  max: NAV_BG_IMAGE_MASK_MAX,
-                  step: 5,
-                  value: navBgImageMask,
-                  onChange: (e) => setNavBgImageMaskValue(e.target.value),
-                  disabled: !navBgImageOn,
-                  style: { width: '160px' },
-                })
-              ]),
-              row('nav-bg-image-fit', false, [
-                R.createElement('span', { style: labelStyle },
-                  t('navBgImageFitRow') + t('sep') + t(navBgImageFit === 'contain' ? 'navBgImageFitContain' : 'navBgImageFitCover'),
-                  R.createElement('span', { style: hintStyle }, t('navBgImageFitHint'))
-                ),
-                R.createElement('span', { style: { display: 'flex', gap: '4px', flex: '0 0 auto' } },
-                  ...NAV_BG_IMAGE_FIT_OPTIONS.map((fit) => R.createElement('button', {
-                    key: 'nav-bg-fit-' + fit,
-                    type: 'button',
-                    onClick: () => setNavBgImageFitValue(fit),
-                    style: btnStyleFor(navBgImageFit === fit, !navBgImageOn),
-                    disabled: !navBgImageOn,
-                    title: navBgImageOn ? '' : t('navBgImageNeedUrl'),
-                  }, t(fit === 'contain' ? 'navBgImageFitContain' : 'navBgImageFitCover')))
-                )
-              ]),
               row('watermark', false, [
                 R.createElement('span', { style: labelStyle }, t('watermarkRow') + t('sep') + stateOf(wmOn)),
                 R.createElement('button', { type: 'button', onClick: toggleWm, style: btnStyleFor(wmOn) }, t(wmOn ? 'watermarkOff' : 'watermarkOn'))
@@ -5079,6 +8687,91 @@ function apply(ctx) {
                   disabled: !wmOn,
                   title: wmOn ? '' : t('wmPersistNeedWm'),
                 }, t(wmPersist ? 'wmPersistOff' : 'wmPersistOn'))
+              ]),
+            ]),
+            /* --- LOCAL PATCH: 自定义背景图（上游无此组）--- */
+            R.createElement('div', { key: 'group-bgimage' }, [
+              groupTitle('02b', 'groupBg', false),
+              row('bg-image', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('bgImageRow') + t('sep') + stateOf(isBgImageOn()),
+                  R.createElement('span', { style: hintStyle }, t('bgImageUrlHint'))
+                ),
+                R.createElement('button', { type: 'button', onClick: toggleBgImage, style: btnStyleFor(isBgImageOn()) },
+                  t(isBgImageOn() ? 'bgImageOff' : 'bgImageOn'))
+              ]),
+              row('bg-image-url', true, [
+                R.createElement('span', { style: labelStyle }, t('bgImageUrlLabel')),
+                R.createElement('span', { style: { display: 'flex', gap: '8px', flex: '0 0 auto', alignItems: 'center' } },
+                  R.createElement('input', {
+                    type: 'text', value: readBgImageUrl(), placeholder: 'https://…',
+                    onChange: (e) => setBgImageUrl(e.target.value),
+                    style: {
+                      width: '220px', padding: '4px 8px', fontSize: '12px',
+                      color: 'var(--dsw-alias-label-primary)',
+                      background: 'var(--dsw-alias-bg-layer-1)',
+                      border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '0',
+                    },
+                  }),
+                  R.createElement('button', { type: 'button', onClick: pickBgImageFile, style: btnStyleFor(false, false) }, t('bgImagePick')),
+                  R.createElement('button', { type: 'button', onClick: clearBgImage, style: btnStyleFor(false, readBgImageUrl() === '') }, t('bgImageClear'))
+                )
+              ]),
+              row('bg-image-mask', false, [
+                R.createElement('span', { style: labelStyle }, t('bgImageMaskLabel') + t('sep') + readBgImageMask() + '%'),
+                R.createElement('input', {
+                  type: 'range', min: BG_IMAGE_MASK_MIN, max: BG_IMAGE_MASK_MAX, step: 1,
+                  value: readBgImageMask(), onChange: (e) => setBgImageMask(e.target.value),
+                  disabled: !isBgImageOn(),
+                })
+              ]),
+              row('bg-image-fit', false, [
+                R.createElement('span', { style: labelStyle }, t('bgImageFitLabel')),
+                R.createElement('span', { style: { display: 'flex', gap: '8px', flex: '0 0 auto' } },
+                  R.createElement('button', { type: 'button', onClick: () => setBgImageFit('cover'), style: btnStyleFor(readBgImageFit() === 'cover', !isBgImageOn()) }, t('bgImageFitCover')),
+                  R.createElement('button', { type: 'button', onClick: () => setBgImageFit('contain'), style: btnStyleFor(readBgImageFit() === 'contain', !isBgImageOn()) }, t('bgImageFitContain'))
+                )
+              ]),
+              row('nav-bg-image', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('navBgImageRow') + t('sep') + stateOf(isNavBgImageOn()),
+                  R.createElement('span', { style: hintStyle }, t('navBgImageUrlHint'))
+                ),
+                R.createElement('button', { type: 'button', onClick: toggleNavBgImage, style: btnStyleFor(isNavBgImageOn()) },
+                  t(isNavBgImageOn() ? 'navBgImageOff' : 'navBgImageOn'))
+              ]),
+              row('nav-bg-image-url', false, [
+                R.createElement('span', { style: labelStyle }, t('bgImageUrlLabel')),
+                R.createElement('span', { style: { display: 'flex', gap: '8px', flex: '0 0 auto', alignItems: 'center' } },
+                  R.createElement('input', {
+                    type: 'text', value: readNavBgImageUrl(), placeholder: 'https://…',
+                    onChange: (e) => setNavBgImageUrl(e.target.value),
+                    style: {
+                      width: '220px', padding: '4px 8px', fontSize: '12px',
+                      color: 'var(--dsw-alias-label-primary)',
+                      background: 'var(--dsw-alias-bg-layer-1)',
+                      border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '0',
+                    },
+                  }),
+                  R.createElement('button', { type: 'button', onClick: pickNavBgImageFile, style: btnStyleFor(false, false) }, t('bgImagePick')),
+                  R.createElement('button', { type: 'button', onClick: clearNavBgImage, style: btnStyleFor(false, readNavBgImageUrl() === '') }, t('bgImageClear'))
+                )
+              ]),
+              row('nav-bg-image-opacity', false, [
+                R.createElement('span', { style: labelStyle }, t('navBgImageOpacityLabel') + t('sep') + readNavBgImageOpacity() + '%'),
+                R.createElement('input', {
+                  type: 'range', min: NAV_BG_IMAGE_OPACITY_MIN, max: NAV_BG_IMAGE_OPACITY_MAX, step: 1,
+                  value: readNavBgImageOpacity(), onChange: (e) => setNavBgImageOpacity(e.target.value),
+                  disabled: !isNavBgImageOn(),
+                })
+              ]),
+              row('nav-bg-image-mask', true, [
+                R.createElement('span', { style: labelStyle }, t('navBgImageMaskLabel') + t('sep') + readNavBgImageMask() + '%'),
+                R.createElement('input', {
+                  type: 'range', min: NAV_BG_IMAGE_MASK_MIN, max: NAV_BG_IMAGE_MASK_MAX, step: 1,
+                  value: readNavBgImageMask(), onChange: (e) => setNavBgImageMask(e.target.value),
+                  disabled: !isNavBgImageOn(),
+                })
               ]),
             ]),
             /* --- 03 动画：启动加载动画 --- */
@@ -5151,6 +8844,205 @@ function apply(ctx) {
                   title: thunderOn ? '' : t('thunderNeed'),
                 }, t(thunderAnim ? 'thunderAnimOff' : 'thunderAnimOn'))
               ]),
+              /* --- 顶部余额胶囊：同样属于「娱乐」组的悬浮层 --- */
+              row('balance-capsule', true, [
+                R.createElement('span', { style: labelStyle },
+                  t('balanceRow') + t('sep') + stateOf(balanceOn),
+                  R.createElement('span', { style: hintStyle },
+                    t(balanceOn ? 'balanceHintOn' : 'balanceHintOff')
+                  )
+                ),
+                R.createElement('span', { style: { display: 'flex', gap: '8px', flex: '0 0 auto' } },
+                  // Same affordance as the boot plate: the theme draws this opening
+                  // pose once per page load, so let the user watch it again without
+                  // reloading. Gated on the theme AND the capsule, because the pose is
+                  // drawn by the stylesheet the master switch removes.
+                  R.createElement('button', {
+                    type: 'button',
+                    onClick: previewBalanceBoot,
+                    style: btnStyleFor(false, !balanceOn || !enabled),
+                    disabled: !balanceOn || !enabled,
+                    title: balanceOn ? '' : t('balanceNeed'),
+                  }, t('preview')),
+                  R.createElement('button', {
+                    type: 'button',
+                    onClick: toggleBalanceCapsule,
+                    style: btnStyleFor(balanceOn),
+                  }, t(balanceOn ? 'balanceOff' : 'balanceOn'))
+                )
+              ]),
+              /* --- 渠道额度读数：右侧百分比显示已用 or 剩余 ---
+                 The row lives directly under the capsule switch because it only
+                 describes that capsule's credits mode; the select mirrors the
+                 glass/renderer rows rather than a toggle, and the hint states
+                 what changes (the right-hand slot) and what does not (the lead
+                 figure always stays the remaining balance). */
+              row('credit-display', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('creditDisplayRow') + t('sep') + t(creditDisplay === 'used' ? 'creditDisplayUsed' : 'creditDisplayRemaining'),
+                  R.createElement('span', { style: hintStyle },
+                    t(creditDisplay === 'used' ? 'creditDisplayHintUsed' : 'creditDisplayHintRemaining')
+                  )
+                ),
+                R.createElement('select', {
+                  'aria-label': t('creditDisplayRow'), value: creditDisplay,
+                  onChange: (event) => setCreditDisplayValue(event.target.value),
+                  style: { color: 'var(--dsw-alias-label-primary)', background: 'var(--dsw-alias-bg-layer-1)',
+                    border: '1px solid var(--dsw-alias-border-l2)', padding: '6px 10px' },
+                }, CREDIT_DISPLAY_OPTIONS.map((value) => R.createElement('option', { key: value, value },
+                  t(value === 'used' ? 'creditDisplayUsed' : 'creditDisplayRemaining'))))
+              ]),
+            ]),
+            /* --- 05 音频：两个生效槽位 + 两个预留槽位 ---
+               Every row states WHEN it fires, because that is the whole contract
+               of this feature; the two reserved rows say outright that they will
+               not fire yet, so a switch that does nothing cannot read as broken. */
+            R.createElement('div', { key: 'group-audio' }, [
+              groupTitle('05', 'groupAudio', false),
+              row('audio', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('audioRow') + t('sep') + stateOf(audioOn),
+                  R.createElement('span', { style: hintStyle },
+                    t(audioOn ? 'audioHintOn' : 'audioHintOff')
+                  )
+                ),
+                R.createElement('button', { type: 'button', onClick: toggleAudio, style: btnStyleFor(audioOn) }, t(audioOn ? 'audioOff' : 'audioOn'))
+              ]),
+              /* The boot row pairs two independent switches stacked on the right:
+                 the sound's own on/off, and the loader's preview button. They are
+                 separate switches because the loader can be on with no sound. */
+              row('audio-boot', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('audioBootRow') + t('sep') + stateOf(audioBoot),
+                  R.createElement('span', { style: hintStyle }, t('audioBootHint'))
+                ),
+                R.createElement('span', { style: { display: 'flex', flexDirection: 'column', gap: '6px', flex: '0 0 auto', alignItems: 'stretch' } },
+                  R.createElement('button', {
+                    type: 'button', onClick: replayLoader,
+                    style: btnStyleFor(false, !loaderOn || !enabled),
+                    disabled: !loaderOn || !enabled,
+                    title: loaderOn ? '' : t('loaderNeed'),
+                  }, t('preview') + ' · ' + t('loaderRow')),
+                  R.createElement('button', {
+                    type: 'button', onClick: toggleAudioBoot,
+                    style: btnStyleFor(audioBoot, !audioOn), disabled: !audioOn,
+                    title: audioOn ? '' : t('audioNeedOn'),
+                  }, t(audioBoot ? 'audioBootOff' : 'audioBootOn'))
+                )
+              ]),
+              row('audio-start', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('audioStartRow') + t('sep') + stateOf(audioStart),
+                  R.createElement('span', { style: hintStyle }, t('audioStartHint'))
+                ),
+                R.createElement('span', { style: { display: 'flex', gap: '8px', flex: '0 0 auto' } },
+                  audioTestButton('turn-start', 'audioSlotStart'),
+                  R.createElement('button', {
+                    type: 'button', onClick: toggleAudioStart,
+                    style: btnStyleFor(audioStart, !audioOn), disabled: !audioOn,
+                    title: audioOn ? '' : t('audioNeedOn'),
+                  }, t(audioStart ? 'audioStartOff' : 'audioStartOn'))
+                )
+              ]),
+              row('audio-done', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('audioDoneRow') + t('sep') + stateOf(audioDone),
+                  R.createElement('span', { style: hintStyle }, t('audioDoneHint'))
+                ),
+                R.createElement('span', { style: { display: 'flex', gap: '8px', flex: '0 0 auto' } },
+                  audioTestButton('turn-done', 'audioSlotDone'),
+                  R.createElement('button', {
+                    type: 'button', onClick: toggleAudioDone,
+                    style: btnStyleFor(audioDone, !audioOn), disabled: !audioOn,
+                    title: audioOn ? '' : t('audioNeedOn'),
+                  }, t(audioDone ? 'audioDoneOff' : 'audioDoneOn'))
+                )
+              ]),
+              row('audio-volume', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('audioVolumeRow') + t('sep') + String(audioVolume) + '%',
+                  R.createElement('span', { style: hintStyle }, t('audioVolumeHint'))
+                ),
+                R.createElement('span', { style: { display: 'flex', alignItems: 'center', gap: '8px', flex: '0 0 auto' } },
+                  R.createElement('input', {
+                    type: 'range', min: 0, max: 100, step: 5,
+                    'aria-label': t('audioVolumeRow'),
+                    value: audioVolume,
+                    disabled: !audioOn,
+                    onChange: (event) => setAudioVolumeValue(Number(event.target.value)),
+                    onMouseUp: () => { previewSlot('turn-done').then(showPreviewNote) },
+                    style: { width: '140px', accentColor: enabled ? 'var(--edge-accent)' : undefined },
+                  }),
+                  R.createElement('span', { style: { ...labelStyle, minWidth: '38px', textAlign: 'right' } }, String(audioVolume) + '%')
+                )
+              ]),
+              row('audio-attention', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('audioAttentionRow') + t('sep') + stateOf(audioTestReady()),
+                  R.createElement('span', { style: hintStyle }, t('audioReservedHint'))
+                ),
+                R.createElement('span', { style: { display: 'flex', gap: '8px', flex: '0 0 auto' } },
+                  audioTestButton('attention', 'audioSlotAttention')
+                )
+              ]),
+              row('audio-fail', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('audioTurnFailRow') + t('sep') + stateOf(audioTestReady()),
+                  R.createElement('span', { style: hintStyle }, t('audioReservedHint'))
+                ),
+                R.createElement('span', { style: { display: 'flex', gap: '8px', flex: '0 0 auto' } },
+                  audioTestButton('turn-fail', 'audioSlotFail')
+                )
+              ]),
+              row('audio-source', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('audioFileRow') + t('sep') + sourceSummary(),
+                  R.createElement('span', { style: hintStyle, wordBreak: 'break-all' }, sourceDetail())
+                ),
+                R.createElement('button', {
+                  type: 'button', onClick: () => { setPreviewNote(''); refreshHostState() },
+                  style: btnStyleFor(false),
+                }, t('audioRefresh'))
+              ]),
+              row('audio-dir', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('audioSoundDirRow') + t('sep') + (readAudioSoundDir() || t('audioSoundDirDefault')),
+                  R.createElement('span', { style: hintStyle }, t('audioSoundDirHint'))
+                ),
+                R.createElement('span', { style: { display: 'flex', gap: '8px', flex: '0 0 auto' } },
+                  R.createElement('input', {
+                    type: 'text',
+                    'aria-label': t('audioSoundDirRow'),
+                    defaultValue: readAudioSoundDir(),
+                    placeholder: t('audioSoundDirDefault'),
+                    onKeyDown: (event) => { if (event.key === 'Enter') applySoundDir(event.target.value) },
+                    onBlur: (event) => applySoundDir(event.target.value),
+                    style: { width: '200px', color: 'var(--dsw-alias-label-primary)', background: 'var(--dsw-alias-bg-layer-1)', border: '1px solid var(--dsw-alias-border-l2)', padding: '6px 8px', fontSize: '12px' },
+                  })
+                )
+              ]),
+              row('audio-human', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('audioHumanOnlyRow') + t('sep') + t(audioHumanOnly ? 'audioHumanOnlyOn' : 'audioHumanOnlyOff'),
+                  R.createElement('span', { style: hintStyle },
+                    t(audioHumanOnly ? 'audioHumanOnlyHintOn' : 'audioHumanOnlyHintOff')
+                  )
+                ),
+                R.createElement('button', {
+                  type: 'button', onClick: toggleAudioHumanOnly,
+                  style: btnStyleFor(audioHumanOnly, !audioOn), disabled: !audioOn,
+                  title: audioOn ? '' : t('audioNeedOn'),
+                }, t(audioHumanOnly ? 'audioHumanOnlyOff' : 'audioHumanOnlyOn'))
+              ]),
+              row('audio-diag', true, [
+                R.createElement('span', { style: labelStyle },
+                  t('audioDiagRow') + t('sep') + stateOf(audioDiag),
+                  R.createElement('span', { style: hintStyle },
+                    previewNote !== '' ? previewNote : t('audioDiagHint')
+                  )
+                ),
+                R.createElement('button', { type: 'button', onClick: toggleAudioDiag, style: btnStyleFor(audioDiag) }, t(audioDiag ? 'audioDiagOff' : 'audioDiagOn'))
+              ]),
             ]),
           ])
         }
@@ -5191,12 +9083,6 @@ function apply(ctx) {
       // The contour layer owns a rAF handle, a ResizeObserver, a MutationObserver
       // and two canvases — every one of them has to go with the run.
       contourTeardown()
-      // The custom backgrounds are plain DOM nodes, but they must still leave
-      // the frame/sidebar when the plugin run is disposed rather than linger
-      // without their stylesheet.
-      bgImageTeardown()
-      navBgImageTeardown()
-      if (typeof document !== 'undefined' && document.body !== null) document.body.classList.remove(BG_ACTIVE_CLASS)
       if (contourSchemeObserver) contourSchemeObserver.disconnect()
       /* The announcement feature owns two store subscriptions, a retry timeout and
          a hide timeout, all of which outlive the DOM node — unmount() covers the
@@ -5204,6 +9090,12 @@ function apply(ctx) {
          them here too, or the callbacks keep firing against a dead run. */
       thunderStopWatch()
       destroyThunder()
+      // Same reason as the announcement watcher: a poll that outlives its fiber
+      // keeps POSTing against a dead run.
+      stopAudioAttentionWatch()
+      // Same reason: the capsule owns a 60s balance poll and a fixed DOM node,
+      // both of which must go with the run.
+      destroyBalanceCapsule()
       disposeSettings()
     })
   }
@@ -5211,6 +9103,10 @@ function apply(ctx) {
 		exports.name = "dsh-theme-endfield";
 		exports.inject = ["theme"];
 		exports.apply = apply;
+		/* The attention markers are attached by apply() itself (they are declared in
+		   its scope) and read by test/audio-attention-watch.test.js, which asserts
+		   they stay semantic: a hashed module class would rot on an upstream rebuild
+		   and the watcher would just stop matching, with no error anywhere. */
 		return module.exports;
 	}
 });

@@ -36,6 +36,7 @@ const fs = require('fs')
 const path = require('path')
 const os = require('os')
 const { execFileSync } = require('child_process')
+const { BROWSER_SETTINGS_SCOPE_SNIPPET } = require(path.join(__dirname, 'fixtures', 'settings-scope.browser.js'))
 
 const ROOT = path.resolve(__dirname, '..')
 const OUT = process.env.ENDFIELD_OUT || fs.mkdtempSync(path.join(os.tmpdir(), 'endfield-stack-'))
@@ -105,7 +106,10 @@ const mk = (alpha) => `<!doctype html><html><head><meta charset="utf-8"><style>
     min-width:0;padding:0 24px}
   .pXSMma_stack{width:100%;max-width:var(--dsh-composer-card-max-width);
     display:flex;flex-direction:column;gap:12px}
-  .pXSMma_headline{color:var(--dsw-alias-label-primary);display:grid;
+  /* 0.1.2-rc.1 merged the hero INTO ConversationRoot (data-phase) and renamed the
+     headline export to '*_headlineText'; the theme's findVisibleHeadline() matches
+     that suffix, so the fixture must carry it for the mark to be positioned. */
+  .AvZvRG_headlineText{color:var(--dsw-alias-label-primary);display:grid;
     grid-template-columns:34px auto auto;justify-content:center;
     align-items:center;column-gap:10px;font-size:26px;font-weight:500;
     line-height:32px}
@@ -130,7 +134,7 @@ const mk = (alpha) => `<!doctype html><html><head><meta charset="utf-8"><style>
       <div class="wSkVaW_scrollBody"><div class="wSkVaW_viewArea">
         <div class="wSkVaW_composerStack wSkVaW_composerHero">
           <div class="pXSMma_root"><div class="pXSMma_stack">
-            <div class="pXSMma_headline">探索未至之境</div>
+            <div class="AvZvRG_headlineText">探索未至之境</div>
           </div></div>
           <div class="composer">Message DeepSeek Harness…
             <div class="_7KE1Ra_root"><div class="_7KE1Ra_menu">
@@ -154,13 +158,11 @@ const mk = (alpha) => `<!doctype html><html><head><meta charset="utf-8"><style>
 <script src="./client.js"></script>
 <script>
   ${DARK ? "document.body.setAttribute('data-ds-dark-theme','')" : ''}
-  const LS=localStorage
-  LS.setItem('dsh-theme-endfield-enabled','1')
-  LS.setItem('dsh-theme-endfield-loader','0')
-  LS.setItem('dsh-theme-endfield-contour','0')
-  LS.setItem('dsh-theme-endfield-watermark','1')
+  /* Theme reads switches via the settingsScope seam (not localStorage). */
+  ${BROWSER_SETTINGS_SCOPE_SNIPPET}
+  var __prefs=__endfieldSettingsScope({ enabled:'1', loader:'0', contour:'0', watermark:'1' })
   const mod=window.__MOD__.factory(()=>null)
-  mod.apply({get:(n)=>n==='theme'?{overrideTokens:()=>()=>{}}:undefined,effect:(f)=>f()})
+  mod.apply({get:(n)=>n==='theme'?{overrideTokens:()=>()=>{}}:(n==='settingsScope'?__prefs.binder:undefined),effect:(f)=>f()})
   document.body.appendChild(document.createElement('span'))
   /* Hide the mark by ALPHA ONLY, after it has mounted. The element, its box and
      every other node stay exactly as in the visible run, so the two screenshots

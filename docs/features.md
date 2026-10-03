@@ -1,36 +1,60 @@
 # 设置项与功能
 
-设置项的行为、默认值、存储键与边界情况。设计取值见 [design-language.md](design-language.md)，实现细节见 [engineering-notes.md](engineering-notes.md)。
+设置项的行为、默认值、字段名与边界情况。设计取值见 [design-language.md](design-language.md)，实现细节见 [engineering-notes.md](engineering-notes.md)。
 
 设置入口：**设置 › 终末地主题设置**。全部文案跟随 DSH 的语言设置（中/英）即时切换，无需刷新。
 
+## 持久化方式（不再用 localStorage）
+
+历史内存风格：这些开关最初存浏览器 `localStorage`。由于浏览器存储按「协议 + 主机 + 端口」的 origin 隔离，而 DSH Desktop 每次启动都在 127.0.0.1 绑定一个**随机临时端口**，端口一变 origin 就变，上次保存的设置永远读不到，表现为「重启后恢复默认」。已改用 DSH 官方的用户设置命名空间：
+
+- **DSH 0.2.0-rc.2 / 0.1.7-rc.1 及以后（当前）**：**Host 端（index.js）** 导出 schemastery `Config`，27 个字段全部 `.volatile()`——这两代都只把 volatile 字段投影成可编辑表单；命名空间就是本插件在 `cordis.patch.yml` 里那一行的 profile entry id（`theme-endfield`）。**浏览器端（client.js）** 用 `ctx.configForms.get('theme-endfield')` 读/写/订阅，值由 DSH 的设置服务写进 profile patch `<profile>/cordis.patch.yml`。另外 Host 会调用 `ctx.settings.configure({ auto: false }, ctx.fiber)` 告诉 DSH 本插件自带设置页，不要再自动生成一份。0.2 的这套接缝与 0.1.7 完全相同，本插件侧不需要改动；0.2 真正改掉的是三个**应用侧**细节（回合状态标签的类名与着色机制、右侧栏列名、插件卡片文案来源），见 [engineering-notes.md § DSH 0.2.0-rc.2](engineering-notes.md#dsh-020-rc2-上失效的三处应用侧钩子v116-已跟进)。
+- **≤ 0.1.5-rc.2（旧宿主，仍兼容）**：Host 通过 `ctx.settings.register('dsh-theme-endfield', schema)` 声明命名空间，由 `@deepseek-ai/dsh-settings-file` 落到 `<dshHome>/settings.yaml`；浏览器端用 `ctx.settingsScope` 的 `bind({ namespace, decode })` 读写。client 在找不到 `configForms` 时自动回落到这条路径。
+
+两代的落盘位置都由 DSH 决定（`$DSH_HOME` 或 `~/.dsh/...`），与浏览器 origin/端口无关，因此在 **dsh web（浏览器、固定/默认端口）** 和 **DSH Desktop（随机临时端口）** 两种运行方式下设置都能正确持久化——它们跑的都是 127.0.0.1 loopback 页面，DSH 会把连接解析为 `host` 持久化模式。
+
+> **升级提示**：0.1.7-rc.1 废弃了 `settings.yaml`（启动时改名为 `settings.yaml.imported`），且其内置迁移只认少数几个段落名，旧的 `dsh-theme-endfield` 段落不在其中——**升级后请在「设置 › 终末地主题设置」里重设一次**。旧值仍可在 `settings.yaml.imported` 中手工对照。详见 [engineering-notes.md § DSH 0.1.7-rc.1 换掉了整套 settings API](engineering-notes.md#dsh-017-rc1-换掉了整套-settings-api-v110-已跟进)。
+
+下表「字段」（缩写）就是存储里的字段名：0.1.7-rc.1 起是 profile patch 里 Config 的 volatile 路径，旧世代是 `settings.yaml` 段落里的键，两者同名（都等价于旧 localStorage 键名的尾部）。
+
+> **字段名是 camelCase，且必须与 Host schema 逐字一致**（复合字段尤其：`contourAnim` 而非 `contour-anim`）。字段名对不上时，值会**静默**落在没人读的地方（旧世代是 `settings.yaml` 里多一行未声明键；0.1.7 起是对非 volatile/未声明路径的写入被 schema 拒绝），声明字段仍是默认——表现为「开关刷新后复位」。成因、影响面与旧存档的迁移见 [engineering-notes.md § 存储字段名](engineering-notes.md#存储字段名必须来自-schema不能用去掉前缀推出来issue-15)，回归测试见 [testing.md](testing.md#设置页)。
+
 ## 总览
 
-| 组 | 开关 | 默认 | 存储键 |
+| 组 | 开关 | 默认 | 命名空间字段 |
 | --- | --- | --- | --- |
-| 01 主题 | 终末地主题 | 开 | `dsh-theme-endfield-enabled` |
-| | 主题配色 | 谷地黄 | `dsh-theme-endfield-palette` |
-| | 主题圆角 | 直角 | `dsh-theme-endfield-radius` |
-| 02 背景 | 等高线背景 | 关 | `dsh-theme-endfield-contour` |
-| | 动态等高线 | 开 | `dsh-theme-endfield-contour-anim` |
-| | 动态帧率 | 24 FPS | `dsh-theme-endfield-contour-fps` |
-| | 动态速度 | 标准 | `dsh-theme-endfield-contour-speed` |
-| | 自定义背景图 | 关 | `dsh-theme-endfield-bg-image-on` |
-| | 背景图（URL / dataURL） | 空 | `dsh-theme-endfield-bg-image-url` |
-| | 背景图遮罩强度 | 55% | `dsh-theme-endfield-bg-image-mask` |
-| | 背景图填充方式 | 填充 | `dsh-theme-endfield-bg-image-fit` |
-| | 导航区背景图 | 关 | `dsh-theme-endfield-nav-bg-image-on` |
-| | 导航图（URL / dataURL） | 空 | `dsh-theme-endfield-nav-bg-image-url` |
-| | 导航图不透明度 | 100% | `dsh-theme-endfield-nav-bg-image-opacity` |
-| | 导航图遮罩强度 | 65% | `dsh-theme-endfield-nav-bg-image-mask` |
-| | 导航图填充方式 | 填充 | `dsh-theme-endfield-nav-bg-image-fit` |
-| | 背景水印 | 开 | `dsh-theme-endfield-watermark` |
-| | 水印保持显示 | 关 | `dsh-theme-endfield-watermark-persist` |
-| 03 动画 | 启动加载动画 | 关 | `dsh-theme-endfield-loader` |
-| 04 娱乐 | 雷霆大字 | 关 | `dsh-theme-endfield-thunder` |
-| | 大字入场动画 | 关 | `dsh-theme-endfield-thunder-anim` |
+| 01 主题 | 终末地主题 | 开 | `enabled`（旧键 `dsh-theme-endfield-enabled`）|
+| | 主题配色 | 谷地黄 | `palette` |
+| | 主题圆角 | 直角 | `radius` |
+| | 磨砂玻璃 | 关 | `glass` |
+| 02 背景 | 等高线背景 | 关 | `contour` |
+| | 动态等高线 | 开 | `contourAnim` |
+| | 鼠标轨迹 | 关 | `contourTrail` |
+| | 等高线绘制 | Canvas | `contourRenderer` |
+| | 动态帧率 | 24 FPS | `contourFps` |
+| | 动态速度 | 标准 | `contourSpeed` |
+| | 滚动暂停 | 开 | `contourScrollPause` |
+| | 背景水印 | 开 | `watermark` |
+| | 水印保持显示 | 关 | `watermarkPersist` |
+| 03 动画 | 启动加载动画 | 关 | `loader` |
+| 04 娱乐 | 雷霆大字 | 关 | `thunder` |
+| | 大字入场动画 | 关 | `thunderAnim` |
+| | 顶部余额胶囊 | 关 | `balanceCapsule` |
 
-约定：**默认开启**的开关读作 `!== '0'`（未设置即开），**默认关闭**的读作 `=== '1'`（未设置即关）。这样异常的存储值不会悄悄改变出厂观感。
+开启后默认显示 DeepSeek API 钱包余额与峰谷时段；会话使用 dsh-codearts-auth 渠道模型时自动切换为该渠道的剩余额度与积分消耗（详见「04 娱乐 › 顶部余额胶囊 › 渠道额度模式」）。
+| 05 音频 | 音频通知 | **关** | `audioEnabled` |
+| | 启动加载动画音 | 开 | `audioBoot` |
+| | 任务开始音 | 开 | `audioTurnStart` |
+| | 任务结束音 | 开 | `audioTurnDone` |
+| | 需要你回应 | 开 | `audioAttention` |
+| | 出错提示音 | 开 | `audioTurnFail` |
+| | 音量 | 100 | `audioVolume` |
+| | 同槽位最小间隔 | 2500 ms | `audioDebounceMs` |
+| | 开始音仅认会话框 | 开 | `audioHumanOnly` |
+| | 自定义音效目录 | （空） | `audioSoundDir` |
+| | 诊断日志 | 关 | `audioDiag` |
+
+取值约定（与 localStorage 时代的极性完全一致，现在由 schema 默认值保证）：**默认开启**的开关在该 schema 里默认存 `'1'`，客户端读作 `!== '0'`；**默认关闭**的存 `'0'`，读作 `=== '1'`。回滚/清除字段时客户端回到 schema 默认值；异常存储值被 schema 校验拒绝，不会悄悄改变出厂观感。
 
 ---
 
@@ -68,13 +92,13 @@
 
 算法细节与实测数据见 [engineering-notes.md § 等高线](engineering-notes.md#等高线背景).
 
-**图层挂在应用外框内部**，`inset:0; z-index:0`，落在「外框底色之上、所有定位子元素之下」。正文永远在图层之上，前景对比度不受影响。挂载期间会把外框、对话列、详情列与侧栏的不透明底色置为透明（`:has()` 守卫使功能关闭时全部规则失效）。
+**图层挂在应用外框内部**，`inset:0; z-index:0`，落在「外框底色之上、所有定位子元素之下」。正文永远在图层之上，前景对比度不受影响。挂载期间会把外框、对话列、右侧栏列（0.1.x 叫详情列）与侧栏的不透明底色置为透明（`:has()` 守卫使功能关闭时全部规则失效）。
 
 **关闭时零逐帧开销**——不是在 rAF 里空转再提前返回，而是整个循环停掉。
 
 ### 动态等高线（默认开启，需先开启等高线背景）
 
-等高线流动变形。动态帧率提供 `24 FPS`、`60 FPS`、`120 FPS` 三档，默认 `24 FPS`；动态速度提供 `1x`、`2x`、`4x` 三档，分别对应慢速、标准、快速，默认 `2x`。帧率写入 `dsh-theme-endfield-contour-fps`，速度写入 `dsh-theme-endfield-contour-speed`，非法值自动回退到默认值。关闭则为静态图案，不做任何逐帧计算。
+等高线流动变形。动态帧率提供 `24 FPS`、`60 FPS`、`120 FPS` 三档，默认 `24 FPS`；动态速度提供 `1x`、`2x`、`4x` 三档，分别对应慢速、标准、快速，默认 `2x`。两者写入 schema 字段 `contourFps` / `contourSpeed`（UI/存储键分别是 `dsh-theme-endfield-contour-fps` / `dsh-theme-endfield-contour-speed`，由 `PREFS_KEY_TO_FIELD` 映射；旧世代落盘时用的是 UI 键的尾部拼写），非法值自动回退到默认值。关闭则为静态图案，不做任何逐帧计算。
 
 **尊重系统「减少动态效果」**：`prefers-reduced-motion` 下图案照常渲染（静态纹理不算动效），但场变形不启动——即使开关是开的。此时设置行会说明是系统偏好在生效，而不是让开关看起来失灵。
 
@@ -93,37 +117,6 @@
 开启后，对话页等非新建会话页面也显示水印。
 
 此时水印挂载在**会话列内部**，以 `z-index: -1` 位于正文**之下**（该列在水印挂载期间获得 `isolation: isolate` 与 `position: relative`，卸载后自动还原）。之所以不挂 `<body>`：一个 fixed 的 body 子节点会画在消息文字**之上**，把用户正在读的内容洗白。
-
-### 自定义背景图（默认关闭）
-
-背景图拆成两个独立模块：**全局整页背景图** 和 **导航区覆盖背景图**。两者都支持 **URL / dataURL** 输入，也支持从本机选取图片文件（浏览器读成 dataURL 后保存）。
-
-#### 全局整页背景图
-
-- 图层挂在应用外框内 `inset:0; z-index:0`，铺满整个界面底层，**包含左侧导航区**；
-- 挂载期间会把外框、导航/侧栏、中列、详情列与会话根的底色置为透明；
-- 遮罩强度（`0–90%`）默认 `55%`：使用 `color-mix` 把背景图向应用底色靠拢，保持亮/暗两种界面下的文字可读性；
-- 填充方式支持**填充**（cover，默认）与**包含**（contain）；
-- 来源与开关分别持久化到 `dsh-theme-endfield-bg-image-url` 与 `dsh-theme-endfield-bg-image-on`；遮罩与填充分别存到 `dsh-theme-endfield-bg-image-mask`、`dsh-theme-endfield-bg-image-fit`。
-
-#### 导航区覆盖背景图
-
-- 独立开关，默认关闭；
-- 开启后只在左导航/侧栏列（`sidebarCol`）内覆盖一张独立背景图；
-- **未开启或未填导航图时，不挂载导航图层，左导航自然显示全局整页背景图**；
-- 拥有独立控制：
-  - **不透明度**（`0–100%`）默认 `100%`：`0` 时完全透明（显示整页背景），`100` 时完全显示导航图；
-  - **遮罩强度**（`0–90%`）默认 `65%`：把导航图向界面底色靠拢，保证“新会话/设置”等文字可读；
-  - **填充方式**：填充（默认）/ 包含；
-- 存储键：
-  - `dsh-theme-endfield-nav-bg-image-on`
-  - `dsh-theme-endfield-nav-bg-image-url`
-  - `dsh-theme-endfield-nav-bg-image-opacity`
-  - `dsh-theme-endfield-nav-bg-image-mask`
-  - `dsh-theme-endfield-nav-bg-image-fit`
-- 提供「清除」按钮：清除已保存的图片并将该功能恢复为关闭；
-- 本地 dataURL 受 `localStorage` 容量限制，保存失败时设置页会提示改用图片 URL；
-- 关闭主题总开关时，全局与导航图层都会随之移除，不残留 DOM。
 
 ---
 
@@ -199,6 +192,45 @@
 
 ---
 
+### 顶部余额胶囊（默认关闭）
+
+开启后屏幕顶部悬浮一枚药丸：左边是 DeepSeek API 余额（¥ / $），右边是当前**峰谷时段**——`高峰` / `低谷`、时段剩余与已过百分比、一个圆环时钟，以及开场那帧「品牌 pose」（`/// DEEPSEEK API` + `DeepSeek 当前低谷`）。设置行提供「预览」按钮，按真实开场动画重播一次；没有配置 API Key 时按钮禁用并说明原因。
+
+**峰谷规则在本地推算**（Host 不提供排班表）：北京时间**周一至周五 9:00-12:00、14:00-18:00 是高峰**，价格为空闲时段的 2 倍。按 DeepSeek 2026-09-19 的「API 峰谷时间补充说明」，**中国法定节假日全天**以及**调休上班的周末**都按空闲计费——后一条天然落在「周末即低谷」上，所以胶囊只要保管一份法定节假日日历（按年抄录国务院通知；未收录的年份退回普通工作日规则，宁可显示高峰也不猜一个假的半价）。
+
+倒计时读的是**同价连续段**，而不是「今天还剩多少」：周五 18:00 到周一 09:00 是一整段 63 小时的低谷，七天国庆是一整段 183 小时，所以读数可能是 `剩余47:20:00`。节假日名只出现在开场 pose 的标题里（`DeepSeek 国庆节低谷`），正式行仍只写两三个字——胶囊宽 300px，多一个字就会撑破它。
+
+#### 渠道额度模式（dsh-codearts-auth）
+
+当当前会话使用的模型来自 [dsh-codearts-auth](https://www.npmjs.com/package/dsh-codearts-auth)（Jet Hub）的某个渠道（CodeArts、CodeBuddy、WorkBuddy、LobsterAI、Qoder、Qoder CN、TRAE、Cline、Loomy、Raccoon、MiniMax、ZCode、OpenCode）时，胶囊自动切换为**渠道额度**显示，随切换渠道实时跟随：
+
+- **显示内容**：`渠道名 剩余额度 单位`——渠道名（如 `TRAE`）小字在前，剩余量沿用插件自己的格式（credit 非整数保留两位小数；token 量纲显示 `12.35K` / `12.35M`），单位尾注 `积分` 或 `Token`。多账号取第一个可用账号的 active 额度包求和。
+- **右侧读数可选已用或剩余**：设置面板「04 娱乐 › 渠道额度读数」可切换右侧百分比的含义——**已用**（默认，`已用xx%` = 已用/总额度，与插件徽章一致）或**剩余**（`剩余xx%` = 剩余/总额度）。右侧圆环与百分比**始终同步**：选「已用」圆环走已用份额，选「剩余」圆环走剩余份额。两种读法都需渠道报出总额度，否则右侧留空、圆环归零——没有总额度的份额无从判断，不编造读数。左侧主数字始终为剩余额度，不受此设置影响。切换在下次取数时生效（不强制额外 RPC，5 分钟取数下限保持诚实）。
+- **右侧进度条显示积分消耗**：圆环时钟与百分比槽位改为 `已用xx%`——`Σ已用 / Σ总额度`，与左侧数字同源同账号。没有总额度信息时百分比留空、圆环归零，不编造读数。
+- **不显示峰谷时段**：高峰/低谷是 DeepSeek API 的计费概念，渠道模式下整段时段读数隐藏。
+- **取数与缓存**：走插件自己的管理 RPC（`usage.badge`），复用宿主侧 120s TTL 缓存（失败缓存 15s）；主题侧另有**每渠道 5 分钟的取数下限**——余额是慢变量，胶囊是一眼可读的快照，不值得更密的请求。渠道**切换**绕过下限立即跟随；取数失败 30 秒后即允许重试。同一 `--endfield-balance-sweep` 变量在两种模式间切换含义，模式切换零重排。
+- **失败语义**：渠道未登录、插件缺失或上游失败显示 `--`，绝不变灰成 0；切回 DeepSeek 模型则恢复钱包余额显示（DeepSeek 钱包轮询始终在跑，切回即刻有数）。
+
+---
+
+## 05 音频（默认关闭）
+
+四种提示音，**由宿主进程播放**而不是浏览器：页面最小化、切到别的应用时同样能听到——那恰好是最需要提示的场合。
+完整文档见 [audio-notifications.md](audio-notifications.md)。
+
+| 槽位 | 触发时机 |
+| --- | --- |
+| `audioBoot` 启动加载动画音 | 播放 ENDFIELD 加载板时响一次（只认真正的页面加载，点「预览」重播不响） |
+| `audioTurnStart` 任务开始音 | 从会话框提交指令后 |
+| `audioTurnDone` 任务结束音 | 我产出最终结果后（中途报错、等待审批不响） |
+| `audioAttention` 需要你回应 | 审批请求 / 我的提问 / 计划求批；锚点为面板自己的 `data-*` 属性 |
+| `audioTurnFail` 出错提示音 | **不接事件**：不需要人工干预的错误保持静音，音效与开关只是预留 |
+
+**总开关 `audioEnabled` 默认关闭**：音效是选择加入（opt-in）的功能，升级到带本功能的版本不会自己开始出声；
+打开总开关后，各槽位开关（默认开启）决定具体哪几种情形响，音量只缩放提示音本身、不改系统音量。
+
+---
+
 ## 其他自动生效的修正
 
 不需要开关、随主题一起生效的可读性修正：
@@ -209,9 +241,10 @@
 | Cordis / 技能 / 工具 检查面板按钮 | 同上 | 16.50:1 |
 | 附件轮播箭头 | 同上 | 16.50:1 |
 | 亮色模式「移除」按钮 | `#ff3b30` 红字在面板底上 3.16:1 | 5.16:1 |
-| 回合状态标签「Deep diving…」 | 渐变文字仍是品牌蓝 | 两配色四个色标全部达 AA |
+| 回合状态标签「Deep diving…」 | 渐变文字仍是品牌蓝 | 两配色四个色标全部达 AA（0.2 起标签改用遮罩扫光，换色走 `--dsw-alias-label-deep-diving*` 两个令牌，结论不变） |
 | 提问卡片「推荐」徽标 | 前景与背景令牌被映射成同一值，完全不可见 | 16.50:1 |
 | 提问卡片选项编号 | 暗色选中行上黑底黑字，1.25:1 | 11.69:1 |
-| 新建会话页背景光晕 | 写死的 `#6187D8` | 改强调色，按亮度对齐原强度 |
+| 新建会话页背景光晕 | 写死的 `#6187D8` | 改强调色，按亮度对齐原强度（`*_heroGlow` 模块自 0.1.2-rc.1 起已不存在、0.2 仍无，规则保留为自愈钩子） |
+| 会话头部预设徽章（agent preset，如「创造模式」） | 上游把徽章移进 `_headerActions` 插槽的包裹层里，主题的 `>` 选择器失配，退回默认灰胶囊 | 恢复强调色填充 + 黑字，**尺寸沿用上游**（不撑宽） |
 
 这些的成因分析见 [engineering-notes.md § 已修问题归档](engineering-notes.md#已修问题归档)。

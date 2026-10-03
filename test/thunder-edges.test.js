@@ -14,16 +14,23 @@
  *
  * No browser and no React: the real client.js runs in-process against a fake
  * `sessions` service shaped like the runtime contract it actually consumes
- * (@deepseek-ai/dsh-client-runtime — `sessions.list` is an observable snapshot
- * store carrying `current`, `sessions.binding(id).session` is an observable
- * snapshot carrying `running`), plus a controllable clock so the 3s hold can be
- * asserted rather than waited out.
+ * (@deepseek-ai/dsh-api-session-controller — `sessions.list` is an observable
+ * snapshot store carrying `{ ids, byId, phase, projectionsBySession }`,
+ * `sessions.binding(id).session` is an observable snapshot carrying `running`),
+ * plus a controllable clock so the 3s hold can be asserted rather than waited out.
+ *
+ * "The current session" is NOT a list field any more — view selection lives
+ * outside the Controller — so the fake publishes it the way the app does:
+ * `byId[id].retainedBy.mainView > 0`, the retention the workspace main view
+ * writes with `sessions.retain(target, { source: 'mainView' })`. Section 14 keeps
+ * an eye on the older `snap.current` shape, which must still work.
  *
  * Usage: node test/thunder-edges.test.js
  */
 const fs = require('fs')
 const path = require('path')
 const vm = require('vm')
+const { settingsScopeStub, fieldName } = require(path.join(__dirname, 'fixtures', 'settings-scope.js'))
 
 const ROOT = path.resolve(__dirname, '..')
 const src = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8')
@@ -128,7 +135,28 @@ const makeObservable = (initial) => {
 
 const sessionA = makeObservable({ running: false })
 const sessionB = makeObservable({ running: false })
-const list = makeObservable({ current: 'session-a' })
+
+/* ---------- the list, in the CURRENT contract shape ----------
+   There is no `current` field: the Controller's list state is
+   `{ ids, byId, phase, projectionsBySession }` and its own comment says "view
+   selection remains outside the Controller". What identifies the session the user
+   is looking at is the `mainView` retention the workspace main view writes when it
+   displays one (`sessions.retain(target, { source: 'mainView' })`), which the
+   Controller copies onto the row. Every shipped package that needs "the current
+   session" reads it back with
+   `Object.values(state.byId).find(row => (row.retainedBy?.mainView ?? 0) > 0)?.id`.
+   This fake does the same thing the runtime does, so the shapes cannot drift
+   apart silently again — which is exactly how the feature died on the new app. */
+const KNOWN_IDS = ['session-a', 'session-b', 'session-flaky']
+const listState = (currentId) => {
+  const byId = {}
+  for (const id of KNOWN_IDS) byId[id] = { id, running: false, retainedBy: id === currentId ? { mainView: 1 } : {} }
+  return { ids: KNOWN_IDS.slice(), byId, phase: 'ready', projectionsBySession: {} }
+}
+const list = makeObservable(listState('session-a'))
+/** Move the mainView retention the way switching sessions does at runtime
+    (retain/release -> publishRetention -> list.set). */
+const select = (id) => list.set(listState(id))
 const sessions = {
   list,
   binding: (id) => {
@@ -138,18 +166,20 @@ const sessions = {
   },
 }
 
-/* ---------- load the real client bundle ---------- */
-const store = new Map([
-  ['dsh-theme-endfield-enabled', '1'],
-  ['dsh-theme-endfield-loader', '0'],
-  ['dsh-theme-endfield-contour', '0'],
-  ['dsh-theme-endfield-watermark', '0'],
-])
-const localStorage = {
-  getItem: (k) => (store.has(k) ? store.get(k) : null),
-  setItem: (k, v) => { store.set(k, String(v)) },
-  removeItem: (k) => { store.delete(k) },
-}
+/* ---------- load the real client bundle ----------
+   The theme reads/writes its preferences through the dsh settingsScope seam, so
+   this test drives it with a fake binder seeded like the old localStorage store:
+   theme on, anim-heavy layers off (thunder itself starts OFF so the edge probes
+   below begin from a pristine state). Changes the sections make write back here;
+   scenarios 11/11b mount fresh sandboxes and seed their own binder. */
+const makePrefStore = (extra = {}) => settingsScopeStub(Object.assign({
+  enabled: '1',
+  loader: '0',
+  contour: '0',
+  watermark: '0',
+}, extra))
+
+const prefStore = makePrefStore()
 
 const sandbox = {
   window: {
@@ -159,7 +189,7 @@ const sandbox = {
     innerWidth: 1440,
     setTimeout: setTimeoutFake, clearTimeout: clearTimeoutFake,
   },
-  document, localStorage,
+  document,
   MutationObserver: function () { this.observe = () => {}; this.disconnect = () => {} },
   ResizeObserver: function () { this.observe = () => {}; this.disconnect = () => {} },
   requestAnimationFrame: () => 0,
@@ -170,7 +200,6 @@ const sandbox = {
   console,
 }
 sandbox.globalThis = sandbox
-sandbox.window.localStorage = localStorage
 sandbox.window.document = document
 
 let loaded = null
@@ -197,6 +226,7 @@ const ctx = {
     if (n === 'theme') return { overrideTokens: () => () => {} }
     if (n === 'slots') return slots
     if (n === 'sessions') return sessions
+    if (n === 'settingsScope') return prefStore.binder
     return undefined
   },
   effect: (fn) => { const d = fn(); if (typeof d === 'function') teardown = d },
@@ -320,7 +350,7 @@ else fail('the plate outlived its 3s hold: ' + JSON.stringify(shownWord()))
    JS timer, not by the keyframes, so turning the animation on must not shorten or
    lengthen the 3s — a regression that would be easy to introduce by tying the
    removal to an animation end event. */
-store.set('dsh-theme-endfield-thunder-anim', '1')
+prefStore.setField('thunderAnim', '1')
 sessionA.set({ running: true })
 if (shownWord() === '任务开始') pass('开启入场动画后仍正常播报')
 else fail('expected 任务开始 with the animation on, got ' + JSON.stringify(shownWord()))
@@ -345,7 +375,7 @@ if (plates()[0].hasAttribute('data-endfield-thunder-still')) pass('系统「减�
 else fail('reduced motion must force the still path even with the animation switch on')
 sandbox.window.matchMedia = realMatchMedia
 advance(3000)
-store.delete('dsh-theme-endfield-thunder-anim')
+prefStore.setField('thunderAnim', '0')
 
 /* --- 6. the other edge: false -> true announces 任务开始 --- */
 sessionA.set({ running: true })
@@ -367,7 +397,7 @@ advance(3000)
        Switching to a session whose turn is in flight must stay silent: the
        first value read from any session is a baseline, not an edge. --- */
 sessionB.set({ running: true })
-list.set({ current: 'session-b' })
+select('session-b')
 if (shownWord() === null) pass('切换到「已在运行」的会话不误报任务开始')
 else fail('switching into a running session announced: ' + shownWord())
 // ...but its completion IS a real edge the user should see.
@@ -443,7 +473,7 @@ sessions.binding = (id) => {
   if (id === 'session-flaky') return { sessionId: id, session: flaky }
   return undefined
 }
-list.set({ current: 'session-flaky' })
+list.set(listState('session-flaky'))
 if (flaky.subscriberCount === 1) pass('快照暂不可读的会话仍会被订阅')
 else fail('expected the unreadable session to be subscribed, got ' + flaky.subscriberCount)
 flaky.set({ running: true })
@@ -480,15 +510,18 @@ const sandbox2 = { ...sandbox }
 sandbox2.globalThis = sandbox2
 sandbox2.window = { ...sandbox.window, __ModuleLoader__: { load: (m) => { loaded2 = m } } }
 delete sandbox2.window.__dshThemeEndfieldApplied
-sandbox2.window.localStorage = localStorage
 sandbox2.window.document = document
 vm.createContext(sandbox2)
 new vm.Script(src, { filename: 'client.js' }).runInContext(sandbox2)
 const mod2 = loaded2.factory(() => null)
-store.set('dsh-theme-endfield-thunder', '1')
+const pref2 = makePrefStore({ thunder: '1' })
 try {
   mod2.apply({
-    get: (n) => (n === 'theme' ? { overrideTokens: () => () => {} } : undefined),
+    get: (n) => {
+      if (n === 'theme') return { overrideTokens: () => () => {} }
+      if (n === 'settingsScope') return pref2.binder
+      return undefined
+    },
     effect: () => {},
   })
   pass('无 sessions 服务时主题仍正常挂载（开关在但不播报）')
@@ -504,7 +537,7 @@ try {
    dead on those loads — the bug this asserts against. */
 let loaded3 = null
 const lateSessionA = makeObservable({ running: false })
-const lateList = makeObservable({ current: 'session-a' })
+const lateList = makeObservable(listState('session-a'))
 let lateService // deliberately undefined at apply() time
 const sandbox3 = { ...sandbox }
 sandbox3.globalThis = sandbox3
@@ -512,18 +545,18 @@ sandbox3.window = { ...sandbox.window, __ModuleLoader__: { load: (m) => { loaded
 // See the note in 11: without this, apply() returns at its first line and the
 // whole case is vacuous.
 delete sandbox3.window.__dshThemeEndfieldApplied
-sandbox3.window.localStorage = localStorage
 sandbox3.window.document = document
 vm.createContext(sandbox3)
 new vm.Script(src, { filename: 'client.js' }).runInContext(sandbox3)
 const mod3 = loaded3.factory(() => null)
-store.set('dsh-theme-endfield-thunder', '1')
-store.set('dsh-theme-endfield-enabled', '1')
+// Thunder must be ON for the late-session announce below; enabled is the default.
+const pref3 = makePrefStore({ thunder: '1' })
 try {
   mod3.apply({
     get: (n) => {
       if (n === 'theme') return { overrideTokens: () => () => {} }
       if (n === 'sessions') return lateService
+      if (n === 'settingsScope') return pref3.binder
       return undefined
     },
     effect: () => {},
@@ -591,6 +624,157 @@ if (zThunder && zLoader && Number(zThunder) < Number(zLoader)) {
 } else {
   fail('the announcement must sit below the boot plate (thunder=' + zThunder + ' loader=' + zLoader + ')')
 }
+
+/* --- 13. THE REPORTED REGRESSION: 「雷霆大字在新版本失效了」 ---
+   The Controller stopped publishing `current` when view selection moved outside it,
+   so on the current app `snap.current` is undefined — and the old code treated that
+   as final: it detached, returned, and never subscribed again. The feature stayed
+   switched on in settings and announced nothing, forever, with no error anywhere.
+   The fix has two halves, both asserted here:
+     1. resolve the current session the way the app itself does (mainView
+        retention), not from a field that no longer exists;
+     2. treat "nothing on screen yet" as a WAITING state that the next list publish
+        can end, instead of a terminal one.
+   Row values matter too: `retainedBy: {}` and `retainedBy: { mainView: 0 }` are
+   both "not being looked at" and must not be mistaken for a selection. */
+let mountSeq = 0
+/** Mount the real bundle fresh, like cases 11/11b: a new sandbox (so the
+    `__dshThemeEndfieldApplied` flag cannot make apply() return at its first line),
+    the same fake clock, and a live `sessions` slot the case can fill in later. */
+const mountFresh = (seed, sessionsSlot) => {
+  mountSeq += 1
+  let loadedHere = null
+  const sb = { ...sandbox }
+  sb.globalThis = sb
+  sb.window = { ...sandbox.window, __ModuleLoader__: { load: (m) => { loadedHere = m } } }
+  delete sb.window.__dshThemeEndfieldApplied
+  sb.window.document = document
+  vm.createContext(sb)
+  new vm.Script(src, { filename: 'client.js' }).runInContext(sb)
+  const pref = makePrefStore(seed)
+  const modHere = loadedHere.factory(() => null)
+  modHere.apply({
+    get: (n) => {
+      if (n === 'theme') return { overrideTokens: () => () => {} }
+      if (n === 'sessions') return sessionsSlot.value
+      if (n === 'settingsScope') return pref.binder
+      return undefined
+    },
+    effect: () => {},
+  })
+  return pref
+}
+const contractA = makeObservable({ running: false })
+const contractList = makeObservable({
+  ids: ['session-a', 'session-b'],
+  phase: 'ready',
+  byId: {
+    'session-a': { id: 'session-a', retainedBy: {} },
+    'session-b': { id: 'session-b', retainedBy: { mainView: 0 } },
+  },
+})
+const contractSlot = { value: undefined } // service arrives after apply(), as a race
+mountFresh({ thunder: '1' }, contractSlot)
+contractSlot.value = {
+  list: contractList,
+  binding: (id) => (id === 'session-a' ? { sessionId: id, session: contractA } : undefined),
+}
+advance(500)
+if (contractA.subscriberCount === 0) pass('新版契约：无人 mainView retain 时不订阅（等待态而非终态）')
+else fail('subscribed to a session nobody is looking at (got ' + contractA.subscriberCount + ')')
+/* Now the main view retains the session it displays — the workspace's own
+   `retain(target, { source: 'mainView' })` — and the Controller republishes the row.
+   Deliberately NO clock advance: recovery must ride that publish, not a poll. */
+contractList.set({
+  ids: ['session-a', 'session-b'],
+  phase: 'ready',
+  byId: {
+    'session-a': { id: 'session-a', retainedBy: { mainView: 1 } },
+    'session-b': { id: 'session-b', retainedBy: { mainView: 0 } },
+  },
+})
+if (contractA.subscriberCount === 1) pass('新版契约：主视图 retain 后立即接上（由列表推送驱动，无需轮询）')
+else fail('the mainView retention publish did not attach the watch (got ' + contractA.subscriberCount + ')')
+contractA.set({ running: true })
+if (shownWord() === '任务开始') pass('新版契约：接上后真实边沿正常播报')
+else fail('expected 任务开始 on the new contract, got ' + JSON.stringify(shownWord()))
+advance(3000)
+/* ...and the watch follows a later switch instead of clinging to the old session. */
+const contractC = makeObservable({ running: false })
+contractSlot.value = {
+  list: contractList,
+  binding: (id) => {
+    if (id === 'session-a') return { sessionId: id, session: contractA }
+    if (id === 'session-c') return { sessionId: id, session: contractC }
+    return undefined
+  },
+}
+contractList.set({
+  ids: ['session-a', 'session-c'],
+  phase: 'ready',
+  byId: {
+    'session-a': { id: 'session-a', retainedBy: {} },
+    'session-c': { id: 'session-c', retainedBy: { mainView: 1 } },
+  },
+})
+if (contractC.subscriberCount === 1 && contractA.subscriberCount === 0) pass('新版契约：切换会话后跟随新会话并释放旧会话')
+else fail('switch on the new contract left watchers at a=' + contractA.subscriberCount + ' c=' + contractC.subscriberCount)
+contractA.set({ running: true })
+if (shownWord() === null) pass('新版契约：已离开的会话不再播报')
+else fail('a session the user left still announced: ' + shownWord())
+
+/* --- 14. the OLDER contract must keep working: a host whose list still publishes
+   `current` (and no byId at all) is what this theme supported before, and the
+   fallback exists so the fix does not trade one generation for the other. --- */
+const legacyA = makeObservable({ running: false })
+const legacyList = makeObservable({ current: 'session-a' })
+const legacySlot = { value: undefined }
+mountFresh({ thunder: '1' }, legacySlot)
+legacySlot.value = {
+  list: legacyList,
+  binding: (id) => (id === 'session-a' ? { sessionId: id, session: legacyA } : undefined),
+}
+advance(500)
+if (legacyA.subscriberCount === 1) pass('旧契约：list 只带 current 时仍能接上')
+else fail('the legacy `current` shape no longer binds (got ' + legacyA.subscriberCount + ')')
+legacyA.set({ running: true })
+if (shownWord() === '任务开始') pass('旧契约：仍能正常播报')
+else fail('expected 任务开始 on the legacy contract, got ' + JSON.stringify(shownWord()))
+advance(3000)
+
+/* --- 15. a list that cannot be subscribed at all is the ONE case that still needs
+   the retry timer. Everywhere else "no current session" is ended by the next list
+   publish, but a store without `subscribe` (or one that throws) has no publish to
+   ride — so without the retry the feature would be permanently silent again, the
+   same failure class as the regression above, and just as invisible. --- */
+const noSubA = makeObservable({ running: false })
+let noSubState = {
+  ids: ['session-a'],
+  phase: 'ready',
+  byId: { 'session-a': { id: 'session-a', retainedBy: {} } },
+}
+const noSubList = { getSnapshot: () => noSubState }
+const noSubSlot = { value: undefined }
+mountFresh({ thunder: '1' }, noSubSlot)
+noSubSlot.value = {
+  list: noSubList,
+  binding: (id) => (id === 'session-a' ? { sessionId: id, session: noSubA } : undefined),
+}
+advance(500)
+if (noSubA.subscriberCount === 0) pass('列表不可订阅：此时确实没有当前会话，不订阅')
+else fail('subscribed with no current session (got ' + noSubA.subscriberCount + ')')
+noSubState = {
+  ids: ['session-a'],
+  phase: 'ready',
+  byId: { 'session-a': { id: 'session-a', retainedBy: { mainView: 1 } } },
+}
+advance(500)
+if (noSubA.subscriberCount === 1) pass('列表不可订阅时靠重试补上（否则与旧 bug 一样永久静默）')
+else fail('a list without subscribe() left the feature silent (got ' + noSubA.subscriberCount + ')')
+noSubA.set({ running: true })
+if (shownWord() === '任务开始') pass('列表不可订阅时仍能正常播报')
+else fail('expected 任务开始 without list subscribe(), got ' + JSON.stringify(shownWord()))
+advance(3000)
 
 console.log('')
 if (failures) { console.error(failures + ' 雷霆大字 check(s) failed'); process.exit(1) }

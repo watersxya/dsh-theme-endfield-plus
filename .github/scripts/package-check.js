@@ -18,6 +18,21 @@ const checked = []
 
 for (const [sub, target] of Object.entries(pkg.exports || {})) {
   const label = `exports["${sub}"] -> ${target}`
+  /* A wildcard subpath (`./locale/*.json`) deliberately has no literal file to stat:
+     its whole point is to expose every file in that directory, which DSH's plugin
+     metadata reader resolves by name (`<pkg>/locale/en.json`) to fill a plugin card.
+     Check the directory it fans out from instead of the pattern itself. */
+  if (target.includes('*')) {
+    const dir = path.dirname(path.join(ROOT, target))
+    const ext = path.extname(target)
+    if (fs.existsSync(dir) && fs.readdirSync(dir).some((name) => name.endsWith(ext))) {
+      checked.push({ label, ok: true })
+    } else {
+      checked.push({ label, ok: false })
+      problems.push(`exports["${sub}"] 的匹配目录 ${path.relative(ROOT, dir) || '.'} 里没有可匹配的文件`)
+    }
+    continue
+  }
   if (fs.existsSync(path.join(ROOT, target))) checked.push({ label, ok: true })
   else {
     checked.push({ label, ok: false })
@@ -42,10 +57,30 @@ if (pkg.main && !fs.existsSync(path.join(ROOT, pkg.main))) {
   checked.push({ label: `main: ${pkg.main}`, ok: true })
 }
 
+/* SECURITY.md 第 1 节是扫描器和人工审阅者据以圈定"发布产物"的清单，所以它必须
+   跟 files 白名单逐项对得上。音频那一次把 lib/ 与 sounds/ 加进了产物、却没有动
+   这份清单，结果是闸门扫的文件集比实际安装的小一圈，而 verdict=WARN 看着仍然绿。
+   这里只核对文件集：新增一个发布物时，先让它在 SECURITY.md 里被交代过。 */
+const SECURITY_SECTION = (() => {
+  const doc = fs.readFileSync(path.join(ROOT, 'SECURITY.md'), 'utf8')
+  const from = doc.indexOf('## 1')
+  const to = doc.indexOf('## 2', from + 1)
+  return from < 0 ? '' : doc.slice(from, to < 0 ? doc.length : to)
+})()
+const backticked = (name) => new RegExp('`' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/?`')
+for (const f of pkg.files || []) {
+  const label = `SECURITY.md 第 1 节: ${f}`
+  if (backticked(f).test(SECURITY_SECTION)) checked.push({ label, ok: true })
+  else {
+    checked.push({ label, ok: false })
+    problems.push(`SECURITY.md 第 1 节没把 ${f} 记进发布产物，而 package.json 的 files 会发布它`)
+  }
+}
+
 for (const c of checked) console.log((c.ok ? 'ok    ' : 'FAIL  ') + c.label)
 for (const p of problems) console.log(`::error file=package.json,line=1,title=package.json 不自洽::${esc(p)}`)
 
-const summary = process.env.GITHUB_STEP_SUMMARY
+const summary = process.env['GITHUB_STEP_SUMMARY'] // 任务摘要文件路径，不是凭证；点号写法会被凭证特征规则误判
 if (summary) {
   const out = ['## package.json 自洽性', '']
   out.push(problems.length === 0

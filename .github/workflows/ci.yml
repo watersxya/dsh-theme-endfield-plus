@@ -79,11 +79,12 @@ jobs:
         run: node .github/scripts/package-check.js
 
   # ---------------------------------------------------------------------------
-  # 测试套件：19 项，逐个跑（不用 npm run test:ci 的 && 串联，那个第一个失败
-  # 就短路，PR 作者只能看到一个问题）。清单仍从 package.json 读，单一来源。
+  # 测试套件：逐个跑（清单由 run-tests.js 从 package.json 的 test:ci 解析，
+  # 项数随清单增长，不在这里硬编码）。不用 npm run test:ci 的 && 串联，那个
+  # 第一个失败就短路，PR 作者只能看到一个问题。清单仍从 package.json 读，单一来源。
   # ---------------------------------------------------------------------------
   test:
-    name: 测试套件 (19 项)
+    name: 测试套件
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -97,7 +98,7 @@ jobs:
           p="$(command -v google-chrome || command -v google-chrome-stable \
             || command -v chromium-browser || command -v chromium || true)"
           if [ -z "$p" ]; then
-            echo "::error title=环境缺失::runner 上找不到 Chrome/Chromium，15 个浏览器测试无法运行"
+            echo "::error title=环境缺失::runner 上找不到 Chrome/Chromium，浏览器测试无法运行"
             exit 1
           fi
           echo "CHROME_PATH=$p" >> "$GITHUB_ENV"
@@ -108,7 +109,7 @@ jobs:
       # 正确（C:\x -> file:///C:/x）；Linux 上 /tmp/x 会拼成 file:////tmp/x，
       # URL 标准把 pathname 保留为 //tmp/x 而**不会**折叠，靠 Linux 自己折叠
       # 连续斜杠才能打开。这套测试此前只在 Windows 跑过，所以先用同样的拼法
-      # 探一次——万一哪天不成立，这里给出一行明确诊断，而不是 15 个测试一起
+      # 探一次——万一哪天不成立，这里给出一行明确诊断，而不是一批测试一起
       # 神秘失败。
       - name: headless Chrome 冒烟检查
         run: |
@@ -157,12 +158,18 @@ jobs:
       - name: 等高线性能 contour-perf
         id: perf
         continue-on-error: true
-        run: npm run test:perf 2>&1 | tee perf.log
+        # pipefail 是必须的：没有它退出码取自 tee，step 永远 success，
+        # 摘要表里的 outcome 就再也反映不出失败了。
+        run: |
+          set -o pipefail
+          npm run test:perf 2>&1 | tee perf.log
 
       - name: 等高线覆盖率 contour-coverage
         id: coverage
         continue-on-error: true
-        run: npm run test:coverage 2>&1 | tee coverage.log
+        run: |
+          set -o pipefail
+          npm run test:coverage 2>&1 | tee coverage.log
 
       - name: 写入摘要
         if: always()
@@ -264,7 +271,7 @@ jobs:
             echo '| 检查 | 结果 |'
             echo '| --- | --- |'
             echo "| 静态检查 | $(icon "$STATIC") \`$STATIC\` |"
-            echo "| 测试套件 (19 项) | $(icon "$TEST") \`$TEST\` |"
+            echo "| 测试套件 | $(icon "$TEST") \`$TEST\` |"
             echo ''
             if [ "$STATIC" = success ] && [ "$TEST" = success ]; then
               echo '全部阻塞检查通过。'

@@ -3,11 +3,13 @@
  * run-tests.js — 跑 test:ci 清单里的每个测试，一次报出**全部**失败。
  *
  * 为什么不直接 `npm run test:ci`：那个脚本是 `node a && node b && ...` 串联，
- * 第一个测试失败就短路，后面 18 个根本不跑。PR 作者于是只看到一个问题，修完
+ * 第一个测试失败就短路，后面的一串根本不跑。PR 作者于是只看到一个问题，修完
  * 推一次，再看到下一个。这里逐个跑、逐个记账，一轮 CI 报完。
  *
  * 清单从 package.json 的 test:ci 里解析出来，不在这里另抄一份——两处清单迟早
- * 会漂移，而漂移的方向总是「CI 少跑了一个」。
+ * 会漂移，而漂移的方向总是「CI 少跑了一个」。所以凡是解析不了的命令一律报错
+ * 退出，绝不静默跳过：上一版正则不认 `node scripts/x.js --check` 这类带参形式，
+ * 两个构建闸门就是这样被 filter 悄悄丢掉的。
  */
 'use strict'
 const { spawnSync } = require('child_process')
@@ -25,11 +27,22 @@ if (!line) {
   process.exit(1)
 }
 
-// `node check.js && node test/foo.test.js && ...` → ['check.js', 'test/foo.test.js', ...]
-const tests = line.split('&&')
-  .map((s) => s.trim())
-  .map((s) => (s.match(/^node\s+(\S+)$/) || [])[1])
-  .filter(Boolean)
+// `node check.js && node test/foo.test.js && node scripts/x.js --check`
+//   → [['check.js'], ['test/foo.test.js'], ['scripts/x.js', '--check']]
+// 每项是完整 argv（脚本 + 尾参）；带参的构建闸门必须照跑。
+const tests = []
+const unparsed = []
+for (const part of line.split('&&')) {
+  const m = part.trim().match(/^node\s+(.+)$/)
+  if (m) tests.push(m[1].split(/\s+/))
+  else unparsed.push(part.trim())
+}
+if (unparsed.length > 0) {
+  // 宁可整轮红掉，也不能让清单项悄悄消失——那正是这个脚本要防的事故。
+  console.error(`::error::scripts.${SCRIPT} 里有无法按 "node <文件> [参数]" 解析的命令，拒绝静默跳过：`)
+  for (const c of unparsed) console.error(`::error::${c}`)
+  process.exit(1)
+}
 
 if (tests.length === 0) {
   console.error(`::error::无法从 scripts.${SCRIPT} 解析出测试清单`)
@@ -52,9 +65,9 @@ function reasonOf(out, code, timedOut) {
 const results = []
 const started = process.hrtime.bigint()
 
-for (const rel of tests) {
+for (const argv of tests) {
   const t0 = process.hrtime.bigint()
-  const p = spawnSync(process.execPath, [rel], {
+  const p = spawnSync(process.execPath, argv, {
     cwd: ROOT, encoding: 'utf8', timeout: PER_TEST_TIMEOUT_MS,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -63,20 +76,21 @@ for (const rel of tests) {
   const timedOut = p.error && p.error.code === 'ETIMEDOUT'
   const ok = !timedOut && p.status === 0
 
-  results.push({ rel, ok, ms, out, reason: ok ? '' : reasonOf(out, p.status, timedOut) })
+  const label = argv.join(' ')
+  results.push({ rel: label, ok, ms, out, reason: ok ? '' : reasonOf(out, p.status, timedOut) })
 
   // 实时回显，日志里保持和本地一致的可读性。
-  console.log(`${ok ? 'ok  ' : 'FAIL'}  ${rel}  (${ms}ms)`)
+  console.log(`${ok ? 'ok  ' : 'FAIL'}  ${label}  (${ms}ms)`)
   if (!ok) {
     console.log(out.trimEnd().split(/\r?\n/).map((l) => '      ' + l).join('\n'))
-    console.log(`::error file=${rel},line=1,title=测试失败::${esc(results[results.length - 1].reason)}`)
+    console.log(`::error file=${label},line=1,title=测试失败::${esc(results[results.length - 1].reason)}`)
   }
 }
 
 const totalMs = Number((process.hrtime.bigint() - started) / 1000000n)
 const failed = results.filter((r) => !r.ok)
 
-const summary = process.env.GITHUB_STEP_SUMMARY
+const summary = process.env['GITHUB_STEP_SUMMARY'] // 任务摘要文件路径，不是凭证；点号写法会被凭证特征规则误判
 if (summary) {
   const out = [`## 测试套件 \`${SCRIPT}\``, '']
   out.push(failed.length === 0

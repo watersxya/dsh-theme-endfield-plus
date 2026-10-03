@@ -44,10 +44,11 @@ function grab(name) {
 }
 
 /* The extracted set must track client.js. contourBuild() was split into a
-   candidate builder plus a coverage validator (accept-or-reroll), and it now reads
-   a per-load seed, so all three names have to come across or the spliced bundle
-   throws and this test reports only "no result". */
-const parts = ['contourRng', 'contourBuild', 'contourBuildCandidate',
+   candidate builder plus a coverage validator (accept-or-reroll), it reads a per-load
+   seed, and it now derives its sampling step from contourStepFor(); all of those names
+   have to come across or the spliced bundle throws and this test reports only
+   "no result". */
+const parts = ['contourRng', 'contourStepFor', 'contourBuild', 'contourBuildCandidate',
   'contourCoverageScore', 'contourEvaluate', 'contourExtractLevel', 'contourExtract']
   .map(grab).join('\n')
 
@@ -62,6 +63,11 @@ const CONTOUR_STEP=10, CONTOUR_LEVELS=20, CONTOUR_SPAN=1.45
 const CONTOUR_MIN_LEN=40, CONTOUR_MIN_RING_BOX=21
 const CONTOUR_KEEP_LEN=CONTOUR_MIN_LEN*1.35, CONTOUR_KEEP_RING=CONTOUR_MIN_RING_BOX*1.5
 const CONTOUR_MIN_CROSSINGS=3
+/* The grid cap, the bump-radius floor and the coverage ink floor added with
+   contourStepFor() / CONTOUR_MIN_INK; the step stays 10 here because 1432x753 is far
+   under the cell cap. */
+const CONTOUR_MAX_CELLS=60000, CONTOUR_MIN_BUMPSAMPLES=4, CONTOUR_MIN_INK=80
+const CONTOUR_SMOOTH_FULL=8000, CONTOUR_SMOOTH_LIMIT=20000
 // Fixed seed here ON PURPOSE: a performance number must be reproducible, and the
 // per-load seed would make every run measure a different landscape.
 const contourSeed=0x5eed4242
