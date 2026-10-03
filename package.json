@@ -1,6 +1,6 @@
 {
   "name": "dsh-theme-endfield",
-  "version": "1.1.9",
+  "version": "1.1.9-plus.1",
   "description": "DeepSeek Harness web theme: the industrial editorial look of the Arknights: Endfield official site — cream paper, ink text, signal-yellow accents, zero radius. Enhanced with custom full-page and navigation background images. Settings persist through the DSH volatile Config + configForms transport (0.2.0-rc.2 and 0.1.7+), with a ctx.settingsScope fallback for older hosts.",
   "keywords": [
     "deepseek-harness",
@@ -10,9 +10,18 @@
     "theme",
     "endfield",
     "arknights",
-    "client"
+    "client",
+    "background-image"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/watersxya/dsh-theme-endfield-plus.git"
+  },
+  "bugs": {
+    "url": "https://github.com/watersxya/dsh-theme-endfield-plus/issues"
+  },
+  "homepage": "https://github.com/watersxya/dsh-theme-endfield-plus#readme",
   "main": "index.js",
   "scripts": {
     "check": "node scripts/build-contour-worker.js --check && node check.js",
