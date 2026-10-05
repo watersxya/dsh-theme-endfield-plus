@@ -1,0 +1,8 @@
+node_modules/
+*.log
+.DS_Store
+# Editor / OS noise
+Thumbs.db
+*.swp
+# Local scratch produced by the icon experiments
+.local-icon-work/
