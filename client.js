@@ -5203,12 +5203,20 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
 
       return {
         sync: () => {
-          if (disposed) return
+          /* `disposed` used to be a one-way latch here, and that was a real bug:
+             destroyBalanceCapsule-style unmount runs whenever the THEME is
+             switched off — including the initial reconcile pass, which runs
+             before the user's preference has been read into the store. One
+             early destroy() then set the latch, `create()` returned early for
+             the rest of the page's life, and the switch read "on" with no button
+             on screen. Turning the theme off must remove the node, NOT retire
+             the controller. */
+          if (disposed) disposed = false
           if (isShutdownButtonOn() !== true) { drop(); return }
           create()
           refresh()
         },
-        destroy: () => { disposed = true; drop() },
+        destroy: () => { drop() },
       }
     })()
 
@@ -7759,6 +7767,13 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
         syncAudioAttentionWatch()
         // Same reason: it re-reads its switch and mounts or removes the capsule.
         syncBalanceCapsule()
+        /* And the shutdown control. Its absence here is why the switch could read
+           "on" with no button on screen: a settings write lands in the DURABLE
+           store, and this reconciler is the only thing that re-derives surfaces
+           from it. Mounting the control in apply() covered page load and nothing
+           else, so the one path a real user takes — flip the switch — never
+           reached it. */
+        syncShutdownButton()
       } else {
         // Switched off mid-session: the watcher must not keep polling a page the
         // theme no longer owns.
@@ -7767,8 +7782,9 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
         // page — destroyBalanceCapsule also clears its interval.
         destroyBalanceCapsule()
         // Same reasoning for the shutdown control: a page whose theme is off must
-        // not be carrying a live button that ends the process.
-        if (typeof shutdownButton !== 'undefined' && shutdownButton !== null) shutdownButton.destroy()
+        // not be carrying a live button that ends the process. Routed through the
+        // same helper as the enabled branch so the two paths cannot drift.
+        syncShutdownButton()
       }
     }
 
