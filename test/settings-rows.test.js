@@ -165,12 +165,15 @@ const ROW_KEYS = ['theme', 'palette', 'glass', 'radius', 'contour', 'contour-ani
   /* LOCAL PATCH: 自定义背景图（上游无此组）*/
   'bg-image', 'bg-image-url', 'bg-image-mask', 'bg-image-fit',
   'nav-bg-image', 'nav-bg-image-url', 'nav-bg-image-opacity', 'nav-bg-image-mask',
-  'loader', 'thunder', 'thunder-anim', 'balance-capsule', 'credit-display', 'audio', 'audio-boot', 'audio-start', 'audio-done', 'audio-volume', 'audio-attention', 'audio-fail', 'audio-source', 'audio-dir', 'audio-human', 'audio-diag']
+  'loader', 'thunder', 'thunder-anim', 'balance-capsule', 'credit-display', 'audio', 'audio-boot', 'audio-start', 'audio-done', 'audio-volume', 'audio-attention', 'audio-fail', 'audio-source', 'audio-dir', 'audio-human', 'audio-diag',
+  /* LOCAL PATCH: 关闭 DSH. One row, and deliberately a SWITCH rather than the
+     control itself — the button is a floating surface, not a settings row. */
+  'shutdown-button']
 const rows = nodes.filter((n) => n.type === 'div' && n.props && ROW_KEYS.includes(n.props.key))
 const groups = (tree.children || []).filter((c) => c && c.type === 'div' && c.props && /^group-/.test(c.props.key))
 
-if (rows.length === 37) pass('panel has all 37 setting rows')
-else fail('expected 37 rows, found ' + rows.length)
+if (rows.length === 38) pass('panel has all 38 setting rows')
+else fail('expected 38 rows, found ' + rows.length)
 
 /* Count the rows the way the PAGE defines them — every direct child of a group
    container — so an unlisted new row shows up as a mismatch instead of vanishing. */

@@ -183,6 +183,14 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       audioSoundDir: '',
       audioHumanOnly: '1',
       audioDiag: '0',
+      /* LOCAL PATCH (not upstream): 关闭 DSH 悬浮按钮. This field must be
+         listed here AND in PREFS_KEY_TO_FIELD below — a field present in one
+         table but absent from the other reads as `undefined`, and `=== '1'`
+         against undefined is permanently false. That is the exact failure this
+         pair of tables exists to prevent: the switch renders, the value saves,
+         and nothing ever turns on. test/settings-namespace.test.js guards the
+         two tables against drifting apart. */
+      shutdownButton: '0',
     }
     /* Convert a namespaced storage key tail to the camelCase field the settings
        schema declares (index.js FIELD_DEFAULTS). A build that derived the field
@@ -270,6 +278,10 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       'dsh-theme-endfield-audio-sound-dir': 'audioSoundDir',
       'dsh-theme-endfield-audio-human-only': 'audioHumanOnly',
       'dsh-theme-endfield-audio-diag': 'audioDiag',
+      /* LOCAL PATCH: 关闭 DSH 悬浮按钮. Written out rather than derived — the
+         compound tail 'shutdown-button' is not the field name 'shutdownButton',
+         so the prefix-strip fallback below would get this one wrong. */
+      'dsh-theme-endfield-shutdown-button': 'shutdownButton',
     }
     /* The pre-migration spelling of a compound field, for the sections that the
        buggy build already wrote: 'contourAnim' -> 'contour-anim'. Derived from
@@ -319,6 +331,15 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
     const AUDIO_STATE_URL = '/theme-endfield/audio/state'
     const AUDIO_PREVIEW_URL = '/theme-endfield/audio/preview'
     const AUDIO_ATTENTION_URL = '/theme-endfield/audio/attention'
+    /* ---------- 关闭 DSH（LOCAL PATCH）----------
+       The page cannot end the process that is serving it, so both the capability
+       probe and the action are host routes. Same arrangement as the audio and
+       balance bridges, and for the same reason: the browser has no access to the
+       process on the other side of the socket. */
+    const SYSTEM_STATE_URL = '/theme-endfield/system'
+    const SHUTDOWN_URL = '/theme-endfield/system/shutdown'
+    const SHUTDOWN_BUTTON_KEY = 'shutdownButton'
+    const isShutdownButtonOn = () => prefsGet(SHUTDOWN_BUTTON_KEY) === '1'
     /* ---------- 顶部余额胶囊 (host half owns the balance query) ----------
        The page cannot reach the account service itself — only Host consumers
        can obtain the request credential — so the capsule polls the host-side
@@ -5029,6 +5050,176 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       showBalanceCapsule()
     }
 
+    /* ---------- 关闭 DSH 悬浮按钮（LOCAL PATCH）----------
+       Kept beside the other floating surfaces rather than in the settings panel:
+       a control that ends the process is an ACTION, and the panel is for
+       configuration. syncShutdownButton() is also what toggleShutdownButton()
+       calls, so flipping the switch makes the button appear or vanish now
+       instead of on the next page load.
+
+       WHY A FACTORY AND NOT INLINE STATEMENTS. The control is a small state
+       machine (idle → armed → acting) with its own node, listeners and timers.
+       Written as straight-line code inside mount() it would leak a listener and
+       a timer on every remount, and the "is it still armed" question would have
+       no single place to live. The factory owns exactly one button and hands
+       back three verbs.
+
+       WHY TWO CLICKS. Ending a running process from a 30px circle is one misclick
+       from losing an unsaved conversation, so the first click arms and only a
+       second one inside the window acts. A native confirm() dialog is the
+       alternative and is deliberately NOT used: it is a heavier interruption than
+       the action warrants and it cannot be styled to match.
+
+       THE SAFETY LINE, restated because it is the point of the feature: this
+       asks the HOST to end the DSH process. It does not power off, restart or log
+       out the machine, and there is no path here that could — see
+       lib/system-bridge.js and test/system-bridge.test.js. */
+    const SHUTDOWN_ARM_MS = 3200
+    const shutdownButton = (() => {
+      let node = null
+      let armedUntil = 0
+      let available = true
+      let disposed = false
+
+      const baseStyle = {
+        position: 'fixed', right: '16px', bottom: '16px', zIndex: '2147483000',
+        width: '30px', height: '30px', borderRadius: '50%', border: 'none',
+        cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        color: 'var(--edge-ink, #101110)',
+        background: 'var(--edge-paper, rgba(242, 242, 236, 0.92))',
+        boxShadow: '0 2px 10px rgba(0, 0, 0, 0.16)',
+        opacity: '0.55',
+        transition: 'opacity 140ms ease, background-color 140ms ease, transform 140ms ease',
+        fontSize: '15px', lineHeight: '1', padding: '0',
+        WebkitUserSelect: 'none', userSelect: 'none',
+      }
+      const paint = (extra) => { if (node !== null) Object.assign(node.style, baseStyle, extra || {}) }
+
+      const disarm = () => {
+        armedUntil = 0
+        if (node === null) return
+        node.setAttribute('data-armed', '0')
+        paint(available ? null : { opacity: '0.25', cursor: 'not-allowed' })
+      }
+
+      const act = () => {
+        if (typeof fetch !== 'function' || node === null) return
+        node.setAttribute('data-busy', '1')
+        paint({ opacity: '0.4', cursor: 'progress' })
+        fetch(SHUTDOWN_URL, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: '{}' })
+          .then((res) => (res.ok ? res.json() : null))
+          .then((json) => {
+            /* Success means the host already scheduled the exit and the socket is
+               about to die, so there is nothing to restore. Only a refusal needs
+               the button back. */
+            if (json && json.ok === true) return
+            if (node === null) return
+            node.removeAttribute('data-busy')
+            disarm()
+          })
+          .catch(() => {
+            /* The socket dies with the process, so a rejection is only meaningful
+               when the request never landed at all. */
+            if (node === null) return
+            node.removeAttribute('data-busy')
+            disarm()
+          })
+      }
+
+      const onClick = () => {
+        if (!available) return
+        if (armedUntil === 0) {
+          armedUntil = Date.now() + SHUTDOWN_ARM_MS
+          node.setAttribute('data-armed', '1')
+          paint({ background: 'var(--edge-accent, #fff500)', opacity: '1' })
+          /* Auto-disarm: a button left armed forever would turn the next
+             unrelated click into a shutdown. */
+          setTimeout(() => { if (armedUntil !== 0 && Date.now() >= armedUntil) disarm() }, SHUTDOWN_ARM_MS)
+          return
+        }
+        disarm()
+        act()
+      }
+      const onOver = () => { if (node !== null && armedUntil === 0) paint(available ? { opacity: '1', transform: 'scale(1.06)' } : { opacity: '0.25' }) }
+      const onOut = () => { if (node !== null && armedUntil === 0) paint(available ? null : { opacity: '0.25', cursor: 'not-allowed' }) }
+      const onDown = () => { if (node !== null) paint({ transform: 'scale(0.96)' }) }
+
+      const create = () => {
+        if (node !== null || disposed) return node
+        if (typeof document === 'undefined' || document === null) return null
+        if (typeof document.createElement !== 'function') return null
+        const el = document.createElement('button')
+        el.type = 'button'
+        // A glyph, not an SVG: keeps the control dependency-free and legible at
+        // 30px. The aria-label carries the meaning for anything that does not
+        // render the glyph.
+        el.textContent = '\u23FB'
+        el.setAttribute('data-endfield-shutdown', '')
+        el.setAttribute('data-armed', '0')
+        el.setAttribute('aria-label', 'Close DSH')
+        el.setAttribute('title', 'Close DSH')
+        Object.assign(el.style, baseStyle)
+        el.addEventListener('click', onClick)
+        el.addEventListener('mouseover', onOver)
+        el.addEventListener('mouseout', onOut)
+        el.addEventListener('mousedown', onDown)
+        const parent = document.body || document.documentElement
+        if (parent === null || parent === undefined) return null
+        parent.appendChild(el)
+        node = el
+        paint(available ? null : { opacity: '0.25', cursor: 'not-allowed' })
+        return node
+      }
+
+      const drop = () => {
+        if (node === null) return
+        try { node.removeEventListener('click', onClick) } catch (e) { /* gone */ }
+        try { node.removeEventListener('mouseover', onOver) } catch (e) { /* gone */ }
+        try { node.removeEventListener('mouseout', onOut) } catch (e) { /* gone */ }
+        try { node.removeEventListener('mousedown', onDown) } catch (e) { /* gone */ }
+        if (node.parentNode) { try { node.parentNode.removeChild(node) } catch (e) { /* already gone */ } }
+        node = null
+        armedUntil = 0
+      }
+
+      /* Probe capability on every sync rather than caching it at mount: the
+         launcher provides appExit, and a surface that gains it after boot should
+         start working without a reload. Cordis lookups are cheap. */
+      const refresh = () => {
+        if (typeof fetch !== 'function') return
+        fetch(SYSTEM_STATE_URL, { headers: { accept: 'application/json' } })
+          .then((res) => (res.ok ? res.json() : null))
+          .then((json) => {
+            if (json === null || json === undefined) return
+            const next = json.available === true
+            if (next === available) return
+            available = next
+            if (node === null) return
+            node.setAttribute('data-available', next ? '1' : '0')
+            if (!next) disarm(); else paint(null)
+          })
+          .catch(() => { /* route absent: assume available, let the click report */ })
+      }
+
+      return {
+        sync: () => {
+          if (disposed) return
+          if (isShutdownButtonOn() !== true) { drop(); return }
+          create()
+          refresh()
+        },
+        destroy: () => { disposed = true; drop() },
+      }
+    })()
+
+    const syncShutdownButton = () => {
+      if (!isEnabled()) {
+        shutdownButton.destroy()
+        return
+      }
+      shutdownButton.sync()
+    }
+
     let disposeToken = () => {}
     let disposeStyles = () => {}
     let mounted = false
@@ -7502,11 +7693,22 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       // Same for the balance capsule: its poll and its node both live inside the
       // themed page, and its styles were just torn down with the sheet above.
       destroyBalanceCapsule()
+      /* And the shutdown button. This one is not cosmetic cleanup: the control
+         ends a running process, so leaving it on an un-themed page would put a
+         live "close DSH" button on a page whose theme is off — and a user who
+         turned the theme off should not still be able to end the service from
+         the leftover node. */
+      if (typeof shutdownButton !== 'undefined' && shutdownButton !== null) shutdownButton.destroy()
     }
 
     if (isEnabled()) {
       mount()
       syncWatermarkVisibility()
+      /* The shutdown control is a surface like the watermark and the capsule, so
+         it is synced here — AFTER mount() has put the sheet in, because it reads
+         --edge-paper / --edge-accent from that sheet and would otherwise paint
+         itself with the fallback literals for its first paint. */
+      syncShutdownButton()
       // The contour sheet needs the stylesheet mount() just inserted, and the app
       // frame to exist; syncContour is a no-op until both are true and the
       // watermark's MutationObserver retries it as the app renders.
@@ -7564,6 +7766,9 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
         // And the capsule must not keep polling the balance route on an unthemed
         // page — destroyBalanceCapsule also clears its interval.
         destroyBalanceCapsule()
+        // Same reasoning for the shutdown control: a page whose theme is off must
+        // not be carrying a live button that ends the process.
+        if (typeof shutdownButton !== 'undefined' && shutdownButton !== null) shutdownButton.destroy()
       }
     }
 
@@ -7711,6 +7916,16 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       /* 音频通知：播放发生在宿主进程（lib/audio.js），所以这里的每一行都在
          说明「什么时候响」而不是「怎么响」；试听按钮走宿主真实播放链路。 */
       groupAudio: '音频',
+      /* --- 关闭 DSH（LOCAL PATCH）---
+         每一句都要说清「只结束服务、不动机器」，因为这是本插件唯一能结束
+         运行中进程的功能。写「关机」会让人以为它能关电脑。 */
+      groupSystem: '系统',
+      shutdownRow: '关闭 DSH 服务',
+      shutdownOn: '开启按钮',
+      shutdownOff: '关闭按钮',
+      shutdownHintOn: '在右下角放一个电源按钮，点两下结束 DSH 服务进程（等同在此窗口按 Ctrl+C）；不会关闭、重启或注销电脑',
+      shutdownHintOff: '默认关闭。开启后右下角出现电源按钮，两下确认才生效',
+      shutdownUnavailable: '当前启动方式不支持（appExit 未提供），按钮会保持禁用',
       audioRow: '音频通知',
       audioOn: '开启提示音',
       audioOff: '关闭提示音',
@@ -7885,6 +8100,17 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       creditDisplayHintRemaining: 'In credits mode the right-hand percentage shows the remaining share (of the reported quota) and the ring sweeps that same remaining share; the lead figure always stays the remaining balance. The slot stays empty when the channel reports no quota; the change applies at the next fetch',
       creditDisplayHintUsed: 'In credits mode the right-hand percentage shows the used share (of the reported quota) and the ring sweeps that same used share; the lead figure always stays the remaining balance. The slot stays empty when the channel reports no quota; the change applies at the next fetch',
       groupAudio: 'AUDIO',
+      /* --- close DSH (LOCAL PATCH) ---
+         Every line says "ends the service, not the machine": this is the only
+         capability in the package that can stop a running process, and calling
+         it "power off" would promise the machine rather than the process. */
+      groupSystem: 'SYSTEM',
+      shutdownRow: 'Close the DSH service',
+      shutdownOn: 'Show the button',
+      shutdownOff: 'Hide the button',
+      shutdownHintOn: 'Puts a power button in the bottom-right corner. Two clicks end the DSH service process (same as Ctrl+C in this window). It does not shut down, restart or log out the computer',
+      shutdownHintOff: 'Off by default. When on, a power button appears bottom-right and needs two clicks to fire',
+      shutdownUnavailable: 'Unavailable on this launch surface (appExit not provided); the button stays disabled',
       audioRow: 'Audio notifications',
       audioOn: 'Turn on',
       audioOff: 'Turn off',
@@ -8020,6 +8246,24 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
           const [audioVolume, setAudioVolume] = R.useState(readAudioVolume())
           const [audioHumanOnly, setAudioHumanOnly] = R.useState(isAudioHumanOnly())
           const [audioDiag, setAudioDiag] = R.useState(isAudioDiagOn())
+          /* --- 关闭 DSH（LOCAL PATCH）---
+             `shutdownNote` carries a HOST FACT: whether `appExit` was available
+             on this surface. The launcher provides it, and a surface that does
+             not launch the app has no way to get it — so the row must be able to
+             say "this build cannot" instead of offering a button that fails.
+             Kept out of the durable store for the same reason as `hostState`. */
+          const [shutdownButtonOn, setShutdownButtonOn] = R.useState(isShutdownButtonOn())
+          const [shutdownNote, setShutdownNote] = R.useState('')
+          const refreshShutdownState = () => {
+            if (typeof fetch !== 'function') return
+            fetch(SYSTEM_STATE_URL, { headers: { accept: 'application/json' } })
+              .then((res) => (res.ok ? res.json() : null))
+              .then((json) => {
+                if (!json) return
+                setShutdownNote(json.available === true ? '' : t('shutdownUnavailable'))
+              })
+              .catch(() => { /* host route absent: the switch just stays silent */ })
+          }
           const [hostState, setHostState] = R.useState(null)
           const [previewNote, setPreviewNote] = R.useState('')
           const refreshHostState = () => {
@@ -8497,6 +8741,24 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
             const next = !audioDiag
             prefsSet(AUDIO_DIAG_KEY, next ? '1' : '0')
             setAudioDiag(next)
+          }
+          /* 关闭 DSH 悬浮按钮的开关。Derived from the STORE on every click, like
+             every other toggle in this panel — see the long note above the other
+             handlers for why the rendered switch and the store are two different
+             reads. */
+          const toggleShutdownButton = () => {
+            const next = isShutdownButtonOn() ? '0' : '1'
+            /* prefsSet takes the FULL namespaced key, not the field name — the
+               field is derived from the key tail by prefsFieldOf. Passing
+               'shutdownButton' would write a key nothing reads back. */
+            prefsSet('dsh-theme-endfield-shutdown-button', next)
+            setShutdownButtonOn(next === '1')
+            /* syncShutdownButton() reads the pref store, so the write above is
+               what it acts on. This call is what makes the control appear NOW
+               instead of after an arbitrary reload: without it the switch saves
+               correctly and then looks broken, because the durable value flips
+               and nothing on screen reacts until the next page load. */
+            syncShutdownButton()
           }
           const applySoundDir = (value) => {
             const text = typeof value === 'string' ? value.trim() : ''
@@ -9106,6 +9368,23 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
                   )
                 ),
                 R.createElement('button', { type: 'button', onClick: toggleAudioDiag, style: btnStyleFor(audioDiag) }, t(audioDiag ? 'audioDiagOff' : 'audioDiagOn'))
+              ]),
+              /* ==== 06 系统（LOCAL PATCH：关机按钮）====
+                 Only one row, and it is a SWITCH, not the button itself. The
+                 control lives with the other floating surfaces (syncShutdownButton)
+                 because a button that ends the process has no business living in
+                 a settings form — the form configures, the surface acts. */
+              groupTitle('06', 'groupSystem', false),
+              row('shutdown-button', true, [
+                R.createElement('span', { style: labelStyle },
+                  t('shutdownRow') + t('sep') + stateOf(shutdownButtonOn),
+                  R.createElement('span', { style: hintStyle },
+                    shutdownNote !== '' ? shutdownNote : t(shutdownButtonOn ? 'shutdownHintOn' : 'shutdownHintOff')
+                  )
+                ),
+                R.createElement('button', {
+                  type: 'button', onClick: toggleShutdownButton, style: btnStyleFor(shutdownButtonOn)
+                }, t(shutdownButtonOn ? 'shutdownOff' : 'shutdownOn'))
               ]),
             ]),
           ])

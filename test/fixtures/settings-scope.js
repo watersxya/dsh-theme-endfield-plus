@@ -91,6 +91,10 @@ const FIELD_DEFAULTS = {
   audioSoundDir: '',
   audioHumanOnly: '1',
   audioDiag: '0',
+  /* LOCAL PATCH: 关闭 DSH —— 必须与 index.js FIELD_DEFAULTS 和
+     client.js PREFS_FIELD_DEFAULTS 三处一致。缺任一张表，开关就读到
+     undefined，`=== '1'` 永远为 false（这就是那张表的用途）。 */
+  shutdownButton: '0',
 }
 
 /** UI/store key -> schema field. Mirrors client.js PREFS_KEY_TO_FIELD. */
@@ -137,6 +141,8 @@ const KEY_TO_FIELD = {
   'dsh-theme-endfield-audio-sound-dir': 'audioSoundDir',
   'dsh-theme-endfield-audio-human-only': 'audioHumanOnly',
   'dsh-theme-endfield-audio-diag': 'audioDiag',
+  /* LOCAL PATCH: 关闭 DSH */
+  'dsh-theme-endfield-shutdown-button': 'shutdownButton',
 }
 
 /** Accept a UI key ('dsh-theme-endfield-thunder-anim'), a bare schema field
