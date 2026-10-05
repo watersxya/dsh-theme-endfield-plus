@@ -67,6 +67,10 @@
 
 const { AudioRuntime, PREF, FALLBACK: AUDIO_FALLBACK, LOG_TAG } = require('./lib/audio.js');
 const { SLOT_IDS } = require('./lib/slots.js');
+/* LOCAL PATCH (not upstream): the "close DSH" control. Its host half is small on
+   purpose — it calls the launcher's `appExit` and nothing else, so the plugin can
+   end the process it runs inside and has no path to the machine itself. */
+const { registerSystemBridge, resolveAppExit, canShutdown, SYSTEM_ROUTE } = require('./lib/system-bridge.js');
 
 const NAME = 'dsh-theme-endfield';
 
@@ -121,6 +125,16 @@ const FIELD_DEFAULTS = {
   thunder: '0',             // 雷霆大字 —— default off
   thunderAnim: '0',         // 大字入场动画 —— default off
   balanceCapsule: '0',      // 顶部余额胶囊 —— default off
+  /* LOCAL PATCH (not upstream): 右下角「关闭 DSH」悬浮按钮.
+     The FIELD is the switch, never the action. A schema field meaning "shut the
+     process down" would be a stored value nobody can meaningfully read back, and
+     it would put a destructive capability behind a durable preference — the
+     switch only decides whether the control is shown; the click is what acts, and
+     the click is what asks the host.
+
+     Default OFF, like every opt-in surface here: an install must not sprout a
+     power button nobody asked for. */
+  shutdownButton: '0',      // 关闭 DSH 悬浮按钮 —— default off
   creditDisplay: 'remaining', // 渠道额度主读数 —— remaining（剩余）| used（已用）
   // --- 自定义背景图（本地补丁）------------------------------------------------
   // LOCAL PATCH (not upstream): the full-page + navigation-overlay background
@@ -1169,6 +1183,12 @@ function apply(ctx, config) {
   // when its own switch is on, so the route itself costs nothing at rest.
   try { registerBalanceBridge(ctx); } catch (e) { /* never load-bearing */ }
 
+  /* The system bridge carries the "close DSH" control. It mounts
+     unconditionally for the same reason as the balance route above: the page
+     probes capability once on mount and only POSTs when the user clicks, so an
+     idle route costs nothing. */
+  try { registerSystemBridge(ctx); } catch (e) { /* never load-bearing */ }
+
   let audioInstalled = false;
   const startAudio = (settingsScope) => {
     if (audioInstalled) return;
@@ -1279,5 +1299,12 @@ module.exports = {
   hasVisibleText,
   installAudio,
   registerBalanceBridge,
+  /* System-bridge surface, asserted by test/system-bridge.test.js. The probe is
+     exported so the "can this surface even exit" contract can be pinned against
+     a real context rather than through the HTTP layer. */
+  registerSystemBridge,
+  resolveAppExit,
+  canShutdown,
+  SYSTEM_ROUTE,
   configPrefScope,
 };
