@@ -85,10 +85,47 @@ const makeEl = (tag) => {
   return el
 }
 const body = makeEl('body')
+/* ---------- page-state simulation -------------------------------------------
+ * The control is gated on being on the CONVERSATION page, which is DOM-observed
+ * because DSH has no router. So the stub has to be able to answer two different
+ * questions the real document answers:
+ *   - does the conversation root exist?   ([class*="centerCol"] [class*="_root"][data-phase])
+ *   - is a sibling plugin panel active?    (html[data-dsh-*-active])
+ *
+ * `onConversationPage` is not reached by any other means, and a stub whose
+ * querySelector always returns null would silently make create() bail — which
+ * looks identical to "the reconciler never syncs it", the exact class of bug
+ * this file exists to catch. Hence an explicit, mutable switch instead of a
+ * hardcoded null.
+ */
+let conversationMounted = true
+let pluginPanelActive = null
+const docEl = makeEl('html')
+const PLUGIN_ACTIVE_ATTRS = [
+  'data-dsh-novelforge-active',
+  'data-dsh-taskboard-active',
+  'data-dsh-ssh-active',
+]
+/* documentElement doubles as the <html> the plugin writes -active onto. It has
+ * to be the SAME object querySelector walks, or the gate would read attributes
+ * from a node the test never mutates. */
+docEl.setAttribute = (k, v) => { docEl.attrs[k] = String(v) }
+docEl.removeAttribute = (k) => { delete docEl.attrs[k] }
+docEl.appendChild = (c) => body.appendChild(c)
+docEl.querySelector = (sel) => (conversationMounted ? docEl : null)
+
 const document = {
-  body, head: makeEl('head'),
+  body, head: makeEl('head'), documentElement: docEl,
   createElement: (tag) => makeEl(tag),
-  querySelector: () => null, querySelectorAll: () => [],
+  querySelector: (sel) => {
+    /* The conversation marker is the only selector the gate uses. Everything
+     * else stays null, as before. */
+    if (typeof sel === 'string' && sel.indexOf('[data-phase]') !== -1) {
+      return conversationMounted ? docEl : null
+    }
+    return null
+  },
+  querySelectorAll: () => [],
   getElementById: () => null, addEventListener() {},
 }
 /* Record every append the plugin makes to the body. */
@@ -208,6 +245,88 @@ if (rendered !== null) {
     try { prefStore.setField('shutdownButton', '1') } catch (error) { /* reported above */ }
     if (countButtons() >= 1) pass('the button comes back on a second enable (latch is not one-way)')
     else fail('a second enable attaches nothing — the latch is still one-way')
+  }
+}
+
+/* ---------- the page gate --------------------------------------------------
+ * The user asked for this control in the conversation surface only. These
+ * assertions pin the gate's DECISION, including the part that was measured
+ * rather than assumed.
+ */
+{
+  /* Reachable state: switch on, conversation page. */
+  try { prefStore.setField('shutdownButton', '1') } catch (error) { fail('setField threw: ' + error.message) }
+
+  /* 5. A sibling plugin panel holds the screen -> the conversation root is
+   *    still mounted UNDERNEATH the overlay, so presence alone would say "show
+   *    it". Only the -active attribute distinguishes the two, which is why it
+   *    is checked. */
+  for (const attr of PLUGIN_ACTIVE_ATTRS) {
+    /* Start from a known-clean state. Sampling `before` while the attribute is
+     * already set would count the PREVIOUS assertion's leftover button and
+     * report a phantom failure — the off/on pair below is what must be
+     * measured, so the field is parked at off first. */
+    prefStore.setField('shutdownButton', '0')
+    conversationMounted = true
+    docEl.setAttribute(attr, '')
+    if (countButtons() !== 0) {
+      fail('a button survived the previous assertion (' + countButtons() + ')')
+    }
+    prefStore.setField('shutdownButton', '1')
+    const after = countButtons()
+    docEl.removeAttribute(attr)
+    if (after === 0) pass('no button while ' + attr + ' is set')
+    else fail(attr + ' is set but the button was still shown (' + after + ')')
+  }
+
+  /* 6. Off the conversation page entirely -> nothing. */
+  prefStore.setField('shutdownButton', '0')
+  conversationMounted = false
+  prefStore.setField('shutdownButton', '1')
+  if (countButtons() === 0) pass('no button when the conversation root is absent')
+  else fail('the button was attached with no conversation page present (' + countButtons() + ')')
+
+  /* 7. Back onto the conversation page -> it returns, without touching the
+   *    switch. This is the transition a user makes constantly (open the
+   *    bookshelf, close it) and it is the reason the gate is observed rather
+   *    than evaluated once. */
+  conversationMounted = true
+  if (prefStore.get('shutdownButton') === '1') {
+    /* The MutationObserver is what performs this in the browser. The stub's
+     * observer is inert, so the transition is driven the way a DOM mutation
+     * would drive it: re-run the gate through the store. */
+    prefStore.setField('shutdownButton', '0')
+    prefStore.setField('shutdownButton', '1')
+  }
+  if (countButtons() >= 1) pass('the button returns when the conversation page comes back')
+  else fail('returning to the conversation page did not restore the button (' + countButtons() + ')')
+
+/* 8. data-phase must match ANY value, not just "hero".
+   *    ConversationMainPanel.tsx:46 sets phase to hero / active / settling,
+   *    and a hero-only probe fails on "active" — which is every conversation
+   *    that has any content in it, i.e. the page the user actually uses.
+   *
+   *    Scoped to the CONVERSATION_MARKER declaration rather than the whole
+   *    file: `data-phase="hero"` legitimately exists elsewhere in this file for
+   *    a different purpose (detecting the boot/hero pane for the loader
+   *    replay), and a whole-file grep conflates the two. */
+  const markerLine = /const CONVERSATION_MARKER\s*=\s*(.*)/.exec(src)
+  if (markerLine === null) {
+    fail('CONVERSATION_MARKER is not declared — the page gate cannot be tested')
+  } else {
+    const decl = markerLine[1]
+    if (decl.indexOf('[data-phase]') !== -1 && decl.indexOf('="hero"') === -1) {
+      pass('the marker accepts every data-phase value (hero/active/settling)')
+    } else {
+      fail('the marker still pins a data-phase value, which misses active conversations: ' + decl.trim())
+    }
+    /* The permanent app frame must NOT be the gate: sidebarCol renders on
+     * every page including plugin overlays (AppFrame.tsx:280). */
+    if (decl.indexOf('sidebarCol') !== -1) {
+      fail('the gate uses sidebarCol, which is the always-rendered app frame — it cannot identify the conversation page')
+    } else {
+      pass('the gate does not rely on the always-present app frame')
+    }
   }
 }
 
