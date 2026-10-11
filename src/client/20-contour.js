@@ -34,6 +34,11 @@
        value, so making it transparent changes no pixel except letting the sheet
        through.
 
+       DENSITY. Level and bump counts adapt to the viewport: a phone-width frame
+       draws fewer levels (wider line spacing) and fewer islands, because the
+       desktop-tuned constants squeezed into a narrow frame read as a tangled
+       pile. See the note on VIEWPORT-ADAPTIVE DENSITY below.
+
        COST. One canvas, throttled, and completely idle when the switch is off:
          static  one extraction, redrawn only on resize/scheme change;
          animated ~24fps, measured in the verification renderer at 1440x900,
@@ -236,6 +241,43 @@
       while (step < 40 && cells(step) > CONTOUR_MAX_CELLS) step += 1
       return step
     }
+    /* VIEWPORT-ADAPTIVE DENSITY. The shipped look was tuned on a desktop frame:
+       20 levels over the +/-1.45 span and 22 gaussian bumps. Those are per-AREA
+       constants, but the sheet is judged per-VIEWPORT -- a phone-width frame
+       squeezes the same 21 lines and 22 islands into a fraction of the width, so
+       the nested rings tighten until they read as a tangled pile (reproduced at
+       375x812: islands merge into stacked bullseyes across the whole sheet).
+
+       The lever is the level count: line spacing is span*2/LEVELS of field, which
+       scales the on-screen median gap directly. Below a 640px short side the
+       level count eases down toward 10 (the gap roughly doubles at the floor) and
+       the bump count eases toward 10 so islands stay separated instead of
+       stacking; at and above 640px both return the shipped values, so every
+       desktop window renders exactly as before. 640px is the boundary above which
+       phone widths (360-430) and narrow split panes no longer dominate the short
+       side; the 320px floor keeps the smallest usable frame a coherent picture.
+       contourBuildCandidate(), contourCoverageScore() and contourExtract() all
+       derive from these, so the layout validator judges a viewport against the
+       density that viewport will actually draw. */
+    const CONTOUR_DENSITY_ANCHOR = 640 // short side at/above which density is the shipped one
+    /* Block-bodied on purpose: the splice-style tests and the worker build pull
+       kernel functions out by brace balance, which a one-line arrow breaks. */
+    const contourMinSide = (w, h) => {
+      return Math.min(w, h)
+    }
+    /* 0 at the 320px floor, 1 at the 640px anchor, linear in between. */
+    const contourDensityT = (w, h) => {
+      return Math.max(0, Math.min(1,
+        (contourMinSide(w, h) - 320) / (CONTOUR_DENSITY_ANCHOR - 320)))
+    }
+    const contourLevelsFor = (w, h) => {
+      const t = contourDensityT(w, h)
+      return Math.max(6, Math.round(10 + t * (CONTOUR_LEVELS - 10)))
+    }
+    const contourBumpsFor = (w, h) => {
+      const t = contourDensityT(w, h)
+      return Math.max(6, Math.round(10 + t * (22 - 10)))
+    }
     const contourFieldFps = () => readContourFps()
     /* Speck rejection. Marching squares legitimately produces two kinds of debris
        that read as "mysterious little dots" rather than terrain:
@@ -434,7 +476,11 @@
     const contourBuildCandidate = (w, h, salt, step) => {
       const cols = Math.ceil(w / step) + 1
       const rows = Math.ceil(h / step) + 1
-      const K = 22                       // bump count: tuned to the reference's island density
+      /* Bump count adapts to the viewport -- see the note on VIEWPORT-ADAPTIVE
+         DENSITY. At or above the 640px short side this is the shipped 22, and a
+         narrow frame gets fewer islands so they stay separated instead of
+         stacking into bullseyes. */
+      const K = contourBumpsFor(w, h)
       const rnd = contourRng((contourSeed + salt * 0x9E3779B1) >>> 0)
       const m = Math.min(w, h)
       const bx = new Float32Array(K), by = new Float32Array(K)
@@ -539,7 +585,12 @@
       const { cols, rows, F } = f
       const GX = 8, GY = 5
       const span = CONTOUR_SPAN
-      const levelStep = (span * 2) / CONTOUR_LEVELS
+      /* Judge against the density this viewport will actually DRAW, not the
+         shipped constant: a narrow frame extracts fewer levels, so its per-quad
+         incidence count is proportionally smaller. Scoring it on CONTOUR_LEVELS
+         would demand 2x the ink of a 10-level sheet and push the re-roll loop to
+         its cap on every small window. */
+      const levelStep = (span * 2) / contourLevelsFor(w, h)
       let worst = Infinity
       let ok = true
       let ink = Infinity
@@ -965,8 +1016,13 @@
       f.boundsReady = true
       contourPaths = []
       const span = CONTOUR_SPAN
-      const stepL = (span * 2) / CONTOUR_LEVELS
-      for (let n = 0; n <= CONTOUR_LEVELS; n++) {
+      /* Level count follows the viewport: the same VIEWPORT-ADAPTIVE DENSITY
+         contourBuildCandidate() laid the bumps out with. At or above the 640px
+         short side this is exactly the shipped loop, so desktop output is
+         unchanged. */
+      const levels = contourLevelsFor(contourGeom.w, contourGeom.h)
+      const stepL = (span * 2) / levels
+      for (let n = 0; n <= levels; n++) {
         contourExtractLevel(-span + n * stepL, contourPaths)
       }
     }

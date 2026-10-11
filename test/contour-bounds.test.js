@@ -15,11 +15,18 @@ function grab(name) {
   throw new Error('unbalanced ' + name)
 }
 function harness(fullScan) {
-  const functions = ['contourRng', 'contourBuildCandidate', 'contourExtractLevel', 'contourExtract'].map(grab).join('\n')
+  const functions = ['contourRng', 'contourBuildCandidate', 'contourExtractLevel', 'contourExtract',
+    /* Viewport-adaptive density helpers the kernel functions close over; the
+       harness constants below pin the shipped density for every window size. */
+    'contourMinSide', 'contourDensityT', 'contourLevelsFor', 'contourBumpsFor'].map(grab).join('\n')
   const code = `
     const CONTOUR_STEP=6, CONTOUR_LEVELS=20, CONTOUR_SPAN=1.45
     const CONTOUR_MIN_LEN=40, CONTOUR_MIN_RING_BOX=21
     const CONTOUR_KEEP_LEN=CONTOUR_MIN_LEN*1.35, CONTOUR_KEEP_RING=CONTOUR_MIN_RING_BOX*1.5
+    /* Mirrored from client.js. Both scan modes below call the same density
+       helpers with the same window, so the equivalence being tested is
+       unaffected by whichever level count each window size lands on. */
+    const CONTOUR_DENSITY_ANCHOR=640
     /* contourBuildCandidate() now takes the sampling step as an argument and floors
        the bump radius at CONTOUR_MIN_BUMPSAMPLES samples — mirror that constant here,
        and pass the shipped 6px step the way contourBuild() would. */

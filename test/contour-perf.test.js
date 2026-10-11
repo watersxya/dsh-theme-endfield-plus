@@ -49,7 +49,9 @@ function grab(name) {
    have to come across or the spliced bundle throws and this test reports only
    "no result". */
 const parts = ['contourRng', 'contourStepFor', 'contourBuild', 'contourBuildCandidate',
-  'contourCoverageScore', 'contourEvaluate', 'contourExtractLevel', 'contourExtract']
+  'contourCoverageScore', 'contourEvaluate', 'contourExtractLevel', 'contourExtract',
+  /* Viewport-adaptive density helpers the kernel functions close over. */
+  'contourMinSide', 'contourDensityT', 'contourLevelsFor', 'contourBumpsFor']
   .map(grab).join('\n')
 
 const HTML = `<!doctype html><html><head><meta charset="utf-8"></head><body>
@@ -68,6 +70,9 @@ const CONTOUR_MIN_CROSSINGS=3
    under the cell cap. */
 const CONTOUR_MAX_CELLS=60000, CONTOUR_MIN_BUMPSAMPLES=4, CONTOUR_MIN_INK=80
 const CONTOUR_SMOOTH_FULL=8000, CONTOUR_SMOOTH_LIMIT=20000
+/* Viewport-adaptive density, mirrored from client.js. The 1432x753 benchmark
+   window sits above the 640px anchor, so the shipped density applies here. */
+const CONTOUR_DENSITY_ANCHOR=640
 // Fixed seed here ON PURPOSE: a performance number must be reproducible, and the
 // per-load seed would make every run measure a different landscape.
 const contourSeed=0x5eed4242

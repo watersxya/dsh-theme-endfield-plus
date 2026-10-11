@@ -51,12 +51,15 @@ function grabNum(name) {
    budget. A missing name is a ReferenceError inside the page and surfaces only as
    "no result". */
 const fns = ['contourRng', 'contourStepFor', 'contourBuild', 'contourBuildCandidate',
-  'contourCoverageScore', 'contourEvaluate', 'contourExtractLevel', 'contourExtract']
+  'contourCoverageScore', 'contourEvaluate', 'contourExtractLevel', 'contourExtract',
+  /* Viewport-adaptive density helpers the kernel functions close over; the
+     1432x753 measurement window keeps the shipped density. */
+  'contourMinSide', 'contourDensityT', 'contourLevelsFor', 'contourBumpsFor']
   .map(grab).join('\n')
 const nums = ['CONTOUR_STEP', 'CONTOUR_LEVELS', 'CONTOUR_SPAN',
   'CONTOUR_MIN_LEN', 'CONTOUR_MIN_RING_BOX', 'CONTOUR_MIN_CROSSINGS', 'CONTOUR_MIN_INK',
   'CONTOUR_MAX_CELLS', 'CONTOUR_MIN_BUMPSAMPLES',
-  'CONTOUR_SMOOTH_FULL', 'CONTOUR_SMOOTH_LIMIT'].map(grabNum).join('\n')
+  'CONTOUR_SMOOTH_FULL', 'CONTOUR_SMOOTH_LIMIT', 'CONTOUR_DENSITY_ANCHOR'].map(grabNum).join('\n')
 // The shipped line renderer, taken verbatim — this is what is under test.
 const drawLines = grab('contourDrawLines')
 

@@ -353,6 +353,7 @@ node test/contour-cusps.test.js       # 逐帧尖点 / 锐角（issue #3）
 node test/contour-a11y.test.js        # prefers-reduced-motion 行为
 node test/contour-coverage.test.js    # 8×5 分区墨迹覆盖率
 node test/contour-perf.test.js        # 稳态帧成本（n=80）
+node test/contour-density.test.js     # 视口密度自适应（≥640px 出厂值不变，小屏递减）
 node test/contour-bounds.test.js      # 扫描边界与全扫的逐坐标等价
 node test/contour-worker.test.js      # worker 内核与主线程一致
 node test/shoot.js                    # 输出亮/暗 × 两配色共四张截图供肉眼复核

@@ -11,6 +11,26 @@ const CONTOUR_MIN_CROSSINGS = 3
 const CONTOUR_MAX_CELLS = 60000, CONTOUR_MIN_BUMPSAMPLES = 4
 const CONTOUR_SMOOTH_FULL = 8000, CONTOUR_SMOOTH_LIMIT = 20000
 const CONTOUR_MIN_INK = 80
+/* Viewport-adaptive density (see src/client/20-contour.js): contourBuildCandidate,
+   contourCoverageScore and contourExtract all call these, so the mirrored names
+   have to come across or the worker throws at its first frame. The expressions are
+   identical to the kernel's. */
+const CONTOUR_DENSITY_ANCHOR = 640
+const contourMinSide = (w, h) => {
+  return Math.min(w, h)
+}
+const contourDensityT = (w, h) => {
+  return Math.max(0, Math.min(1,
+    (contourMinSide(w, h) - 320) / (CONTOUR_DENSITY_ANCHOR - 320)))
+}
+const contourLevelsFor = (w, h) => {
+  const t = contourDensityT(w, h)
+  return Math.max(6, Math.round(10 + t * (CONTOUR_LEVELS - 10)))
+}
+const contourBumpsFor = (w, h) => {
+  const t = contourDensityT(w, h)
+  return Math.max(6, Math.round(10 + t * (22 - 10)))
+}
 let contourSeed = 1, contourField = null, contourGeom = null, contourPaths = []
 let contourLineCv = null, canvas = null, painter = null, stroke = 'rgba(0,0,0,0)', rasterizer = null
 const contourStroke = () => stroke

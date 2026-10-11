@@ -55,11 +55,15 @@ function grabNum(name) {
    it runs directly in Node against a recording stub — no browser needed. Names must
    track client.js; a missing one throws here instead of failing mysteriously. */
 const fns = ['contourRng', 'contourStepFor', 'contourBuild', 'contourBuildCandidate', 'contourCoverageScore',
-  'contourEvaluate', 'contourExtractLevel', 'contourExtract'].map(grab).join('\n')
+  'contourEvaluate', 'contourExtractLevel', 'contourExtract',
+  /* Viewport-adaptive density: the kernel functions above call these. The
+     measurement window (1432x753) is at or above the 640px anchor, so they
+     return the shipped constants and the measured geometry is unchanged. */
+  'contourMinSide', 'contourDensityT', 'contourLevelsFor', 'contourBumpsFor'].map(grab).join('\n')
 const nums = ['CONTOUR_STEP', 'CONTOUR_LEVELS', 'CONTOUR_SPAN',
   'CONTOUR_MIN_LEN', 'CONTOUR_MIN_RING_BOX', 'CONTOUR_MIN_CROSSINGS', 'CONTOUR_MIN_INK',
   'CONTOUR_MAX_CELLS', 'CONTOUR_MIN_BUMPSAMPLES',
-  'CONTOUR_SMOOTH_FULL', 'CONTOUR_SMOOTH_LIMIT'].map(grabNum).join('\n')
+  'CONTOUR_SMOOTH_FULL', 'CONTOUR_SMOOTH_LIMIT', 'CONTOUR_DENSITY_ANCHOR'].map(grabNum).join('\n')
 
 let api
 try {
