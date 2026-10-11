@@ -6152,14 +6152,24 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
          off-screen with visibility:hidden. Frosting the bare 'push' panel would
          leave an opaque glass rectangle covering the right half of the screen
          while collapsed, so frost it only when the panel is expanded. */
+      /* WHY no backdrop-filter on [data-composer-card]: a backdrop-filter (like
+         any filter) makes the element the containing block for position:fixed
+         descendants. The send-button tooltip is fixed-positioned from viewport
+         coords, so blurring the card resolved its coords against the shrunk
+         card box — pushing it past the card's right edge and making its
+         ResizeObserver re-measure in a loop (visible layout jitter). The card
+         keeps the same opaque glass fill without the filter; the docked panel
+         hosts no fixed tooltip so it can keep the real frost. See glass.md. */
       body[data-endfield-glass]
         :is([data-composer-card], [data-sidebar-right-panel='push'][data-sidebar-right-open]) {
         background-color: rgb(var(--edge-glass-fill) / var(--edge-glass-alpha)) !important;
         background-image: linear-gradient(145deg, var(--edge-glass-sheen), transparent 58%),
           radial-gradient(ellipse at 0% 0%, color-mix(in srgb, var(--edge-accent) 10%, transparent), transparent 75%) !important;
+        --dsw-elevation-stroke-color: var(--edge-glass-edge);
+      }
+      body[data-endfield-glass] [data-sidebar-right-panel='push'][data-sidebar-right-open] {
         -webkit-backdrop-filter: blur(var(--edge-glass-blur)) saturate(1.05);
         backdrop-filter: blur(var(--edge-glass-blur)) saturate(1.05);
-        --dsw-elevation-stroke-color: var(--edge-glass-edge);
       }
       body[data-endfield-glass] [data-slot='sidebar'] > div {
         background-image: linear-gradient(145deg, var(--edge-glass-sheen), transparent 58%),
@@ -6179,6 +6189,8 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
           -webkit-backdrop-filter: none; backdrop-filter: none;
         }
       }
+      /* The composer card never gets a backdrop-filter in any tier or media state
+         (fixed-descendant containing block — see the WHY comment above). */
       ::selection {
         color: #000;
         background: var(--edge-signal, var(--edge-accent));
@@ -8503,7 +8515,7 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       contourAnimHintOn: '等高线缓慢流动变形（可选 24 / 60 / 120 FPS，关闭后为静态图案）',
       contourAnimHintOff: '静态等高线，不做任何逐帧计算',
       contourAnimHintReduced: '系统已开启「减少动态效果」，当前保持静态',
-      glassRow: '磨砂玻璃', glassHint: '仅输入框和停靠面板使用局部模糊；侧栏保持静态质感',
+      glassRow: '磨砂玻璃', glassHint: '停靠面板使用局部模糊；输入框使用同色底但不模糊，避免气泡抖动',
       glassOff: '关闭', glassSubtle: '轻度', glassStandard: '标准', glassStrong: '浓厚',
       contourRendererRow: '等高线绘制', contourRendererCanvas: 'Canvas', contourRendererWorker: 'Worker / WebGL',
       contourRendererHint: '实验性后台绘制；不支持时自动回退，适合对照滚动性能',
@@ -8690,7 +8702,7 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       contourAnimHintOn: 'The field drifts at 24, 60 or 120 FPS (static pattern when off)',
       contourAnimHintOff: 'Static contours, with no per-frame work at all',
       contourAnimHintReduced: 'Your system asks for reduced motion, so it stays static',
-      glassRow: 'Frosted glass', glassHint: 'Local blur on the composer and docked panel; static sidebar texture',
+      glassRow: 'Frosted glass', glassHint: 'Local blur on the docked panel; the composer keeps an opaque tint without blur so tooltips stay stable',
       glassOff: 'Off', glassSubtle: 'Subtle', glassStandard: 'Standard', glassStrong: 'Strong',
       contourRendererRow: 'Contour renderer', contourRendererCanvas: 'Canvas', contourRendererWorker: 'Worker / WebGL',
       contourRendererHint: 'Experimental background rendering with automatic fallback; compare scrolling on your device',

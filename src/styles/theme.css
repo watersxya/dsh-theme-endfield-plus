@@ -389,14 +389,24 @@
          off-screen with visibility:hidden. Frosting the bare 'push' panel would
          leave an opaque glass rectangle covering the right half of the screen
          while collapsed, so frost it only when the panel is expanded. */
+      /* WHY no backdrop-filter on [data-composer-card]: a backdrop-filter (like
+         any filter) makes the element the containing block for position:fixed
+         descendants. The send-button tooltip is fixed-positioned from viewport
+         coords, so blurring the card resolved its coords against the shrunk
+         card box — pushing it past the card's right edge and making its
+         ResizeObserver re-measure in a loop (visible layout jitter). The card
+         keeps the same opaque glass fill without the filter; the docked panel
+         hosts no fixed tooltip so it can keep the real frost. See glass.md. */
       body[data-endfield-glass]
         :is([data-composer-card], [data-sidebar-right-panel='push'][data-sidebar-right-open]) {
         background-color: rgb(var(--edge-glass-fill) / var(--edge-glass-alpha)) !important;
         background-image: linear-gradient(145deg, var(--edge-glass-sheen), transparent 58%),
           radial-gradient(ellipse at 0% 0%, color-mix(in srgb, var(--edge-accent) 10%, transparent), transparent 75%) !important;
+        --dsw-elevation-stroke-color: var(--edge-glass-edge);
+      }
+      body[data-endfield-glass] [data-sidebar-right-panel='push'][data-sidebar-right-open] {
         -webkit-backdrop-filter: blur(var(--edge-glass-blur)) saturate(1.05);
         backdrop-filter: blur(var(--edge-glass-blur)) saturate(1.05);
-        --dsw-elevation-stroke-color: var(--edge-glass-edge);
       }
       body[data-endfield-glass] [data-slot='sidebar'] > div {
         background-image: linear-gradient(145deg, var(--edge-glass-sheen), transparent 58%),
@@ -416,6 +426,8 @@
           -webkit-backdrop-filter: none; backdrop-filter: none;
         }
       }
+      /* The composer card never gets a backdrop-filter in any tier or media state
+         (fixed-descendant containing block — see the WHY comment above). */
       ::selection {
         color: #000;
         background: var(--edge-signal, var(--edge-accent));

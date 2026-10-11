@@ -11,7 +11,9 @@ const {launch,boot}=require('./fixtures/chrome-cdp.js')
     for(const [level,radius,alpha] of [['subtle',8,dark?.64:.68],['standard',14,dark?.76:.8],['strong',22,dark?.88:.9]]){
       await browser.evaluate(`__prefs.setItem('dsh-theme-endfield-glass',${JSON.stringify(level)})`)
       const material=await browser.evaluate(`(()=>{const e=document.querySelector('[data-composer-card]'),s=getComputedStyle(e);return {filter:s.backdropFilter,background:s.backgroundColor,box:JSON.stringify(e.getBoundingClientRect().toJSON())}})()`)
-      assert.match(material.filter,new RegExp('blur\\('+radius+'px\\)'))
+      // The card must NOT be a containing block for fixed descendants (send-button
+      // tooltip): its backdrop-filter stays 'none' even when glass is on.
+      assert.equal(material.filter,'none')
       assert.match(material.background,new RegExp(String(alpha).replace('.','\\.')))
       assert.equal(material.box,original)
       // Expanded docked panel is frosted; the collapsed one (no data-sidebar-right-open)
