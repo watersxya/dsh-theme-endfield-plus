@@ -7936,8 +7936,11 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
         /* Covers every circle INSIDE the pill (badge, ring, clock, brand
            mark): they inherit the host's superellipse(1.5) like everything
            else, and a 999px radius only draws a true disc when the shape is
-           round. The pill itself needs no shape — its radius is zero. */
-        corner-shape: round;
+           round. The pill itself needs no shape — its radius is zero.
+           !important like every other pin in this sheet: the host re-applies
+           its superellipse on its own selectors, and an unqualified round
+           loses to it (that is how the dial came out squircle-shaped). */
+        corner-shape: round !important;
         /* The silhouette is DRAWN (see the section comment): two discs at the
            ends + a band between their centres. A plain colour would be clipped
            by the host's superellipse corner shape; this way the outline IS the
@@ -8089,6 +8092,7 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
         height: 10px;
         margin-right: 4px;
         border-radius: 3px;
+        corner-shape: round !important;
         background: #f1f1ec;
       }
       [data-endfield-balance] [data-endfield-balance-icon]::before {
@@ -8096,6 +8100,7 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
         position: absolute;
         inset: 2px;
         border-radius: 2px;
+        corner-shape: round !important;
         background: #312f30;
       }
       [data-endfield-balance] [data-endfield-balance-icon]::after {
@@ -8103,6 +8108,7 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
         position: absolute;
         inset: 3.5px;
         border-radius: 1px;
+        corner-shape: round !important;
         background: #f1f1ec;
       }
       /* ¥ + integer + fraction are one unbroken run: the reference has no gap
@@ -8222,6 +8228,7 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
         width: 27px;
         height: 27px;
         border-radius: 999px;
+        corner-shape: round !important;
         background: #262425;
       }
       /* Progress ring: the accent segment covers the elapsed share starting at
@@ -8230,6 +8237,7 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
         position: absolute;
         inset: 1.5px;
         border-radius: 999px;
+        corner-shape: round !important;
         background: conic-gradient(
           from 0deg,
           var(--edge-accent) 0deg var(--endfield-balance-sweep, 0deg),
@@ -8243,6 +8251,7 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
         width: 12px;
         height: 12px;
         border-radius: 999px;
+        corner-shape: round !important;
         background: var(--edge-accent);
       }
       /* The needle: hangs from the face's centre up to ~1 o'clock, in the
