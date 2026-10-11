@@ -43,6 +43,9 @@
           const [thunderOn, setThunderOn] = R.useState(isThunderOn())
           const [thunderAnim, setThunderAnim] = R.useState(isThunderAnimOn())
           const [balanceOn, setBalanceOn] = R.useState(isBalanceCapsuleOn())
+          const [balancePosition, setBalancePosition] = R.useState(readBalanceCapsulePosition())
+          const [balanceSidebarHide, setBalanceSidebarHide] = R.useState(isBalanceSidebarHideOn())
+          const [balanceHoverHide, setBalanceHoverHide] = R.useState(isBalanceHoverHideOn())
           const [creditDisplay, setCreditDisplay] = R.useState(readCreditDisplay())
           const [palette, setPalette] = R.useState(readPalette())
           const [glass, setGlass] = R.useState(readGlass())
@@ -114,6 +117,9 @@
               setThunderOn(isThunderOn())
               setThunderAnim(isThunderAnimOn())
               setBalanceOn(isBalanceCapsuleOn())
+              setBalancePosition(readBalanceCapsulePosition())
+              setBalanceSidebarHide(isBalanceSidebarHideOn())
+              setBalanceHoverHide(isBalanceHoverHideOn())
               setCreditDisplay(readCreditDisplay())
               setPalette(readPalette())
               setGlass(readGlass())
@@ -369,6 +375,39 @@
             if (CREDIT_DISPLAY_OPTIONS.indexOf(value) === -1) return
             prefsSet(CREDIT_DISPLAY_KEY, value)
             setCreditDisplay(value)
+          }
+          /* 停靠位 is a select like the credit readout: three literals, one meaning
+             ("where does the pill dock"), no polarity. syncBalanceCapsule() rebuilds
+             the live capsule (destroy -> remount) when the position changed, so the
+             move is visible immediately; with the capsule off the write simply waits
+             for the next mount. */
+          const BALANCE_POSITION_SELECT_OPTIONS = BALANCE_POSITION_OPTIONS
+          const setBalancePositionValue = (value) => {
+            if (BALANCE_POSITION_SELECT_OPTIONS.indexOf(value) === -1) return
+            prefsSet(BALANCE_POSITION_KEY, value)
+            setBalancePosition(value)
+            syncBalanceCapsule()
+          }
+          /* 防遮挡子开关 are polar toggles like the master switch: each writes
+             its default-ON field and mirrors into React state. The live capsule
+             picks both values up on its NEXT shade decision (every sidebar
+             resize and mousemove re-reads the pref store), so no rebuild is
+             needed — but a switch turned OFF while the capsule is currently
+             hidden must un-hide it immediately, which syncBalanceCapsule's
+             plain re-show does not do. balanceShadeApply() re-derives from the
+             store, so calling it (when a pill is live) clears the stale shade
+             on the same tick. */
+          const toggleBalanceSidebarHide = () => {
+            const next = !isBalanceSidebarHideOn()
+            prefsSet(BALANCE_SIDEBAR_HIDE_KEY, next ? '1' : '0')
+            setBalanceSidebarHide(next)
+            if (typeof balanceShadeApply === 'function') balanceShadeApply()
+          }
+          const toggleBalanceHoverHide = () => {
+            const next = !isBalanceHoverHideOn()
+            prefsSet(BALANCE_HOVER_HIDE_KEY, next ? '1' : '0')
+            setBalanceHoverHide(next)
+            if (typeof balanceShadeApply === 'function') balanceShadeApply()
           }
           /* 预览: the opening pose is a one-shot moment — a real load shows it once
              and there is no reload button on the settings page. Remounting the
@@ -826,7 +865,7 @@
                 }, t(thunderAnim ? 'thunderAnimOff' : 'thunderAnimOn'))
               ]),
               /* --- 顶部余额胶囊：同样属于「娱乐」组的悬浮层 --- */
-              row('balance-capsule', true, [
+              row('balance-capsule', false, [
                 R.createElement('span', { style: labelStyle },
                   t('balanceRow') + t('sep') + stateOf(balanceOn),
                   R.createElement('span', { style: hintStyle },
@@ -851,6 +890,60 @@
                     style: btnStyleFor(balanceOn),
                   }, t(balanceOn ? 'balanceOff' : 'balanceOn'))
                 )
+              ]),
+              /* --- 胶囊位置 + 防遮挡：停靠位是三档 select，行为在胶囊上 ---
+                 The select mirrors the credit-display row; the hint names BOTH
+                 automatic hiding rules (sidebar open / pointer nearby) so the
+                 behaviour is discoverable without reading the source. The row is
+                 only meaningful while the capsule is on, but the select stays
+                 enabled: writing a dock with the capsule off is a valid
+                 pre-configuration that the next mount honours. */
+              row('balance-capsule-position', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('balancePositionRow') + t('sep') + t('balancePosition' + balancePosition.charAt(0).toUpperCase() + balancePosition.slice(1)),
+                  R.createElement('span', { style: hintStyle },
+                    t('balancePositionHint')
+                  )
+                ),
+                R.createElement('select', {
+                  'aria-label': t('balancePositionRow'), value: balancePosition,
+                  onChange: (event) => setBalancePositionValue(event.target.value),
+                  style: { color: 'var(--dsw-alias-label-primary)', background: 'var(--dsw-alias-bg-layer-1)',
+                    border: '1px solid var(--dsw-alias-border-l2)', padding: '6px 10px' },
+                }, BALANCE_POSITION_SELECT_OPTIONS.map((value) => R.createElement('option', { key: value, value },
+                  t('balancePosition' + value.charAt(0).toUpperCase() + value.slice(1)))))
+              ]),
+              /* --- 防遮挡两个子开关：侧栏展开自动隐藏 / 指针靠近自动隐藏 ---
+                 Both ship ON because the遮挡 they answer is what the capsule
+                 rows exist for; each toggle can silence its rule individually.
+                 The switches stay enabled with the capsule off (a
+                 pre-configuration the next mount honours), mirroring the
+                 position select above; the hint states what fades and when. */
+              row('balance-capsule-sidebar-hide', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('balanceSidebarHideRow') + t('sep') + stateOf(balanceSidebarHide),
+                  R.createElement('span', { style: hintStyle },
+                    t(balanceSidebarHide ? 'balanceSidebarHideHintOn' : 'balanceSidebarHideHintOff')
+                  )
+                ),
+                R.createElement('button', {
+                  type: 'button',
+                  onClick: toggleBalanceSidebarHide,
+                  style: btnStyleFor(balanceSidebarHide),
+                }, t(balanceSidebarHide ? 'balanceOff' : 'balanceOn'))
+              ]),
+              row('balance-capsule-hover-hide', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('balanceHoverHideRow') + t('sep') + stateOf(balanceHoverHide),
+                  R.createElement('span', { style: hintStyle },
+                    t(balanceHoverHide ? 'balanceHoverHideHintOn' : 'balanceHoverHideHintOff')
+                  )
+                ),
+                R.createElement('button', {
+                  type: 'button',
+                  onClick: toggleBalanceHoverHide,
+                  style: btnStyleFor(balanceHoverHide),
+                }, t(balanceHoverHide ? 'balanceOff' : 'balanceOn'))
               ]),
               /* --- 渠道额度读数：右侧百分比显示已用 or 剩余 ---
                  The row lives directly under the capsule switch because it only

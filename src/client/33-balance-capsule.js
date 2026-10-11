@@ -45,6 +45,17 @@
     let balanceTimer = null
     let balancePollTimer = null
     let balanceBusy = false
+    /* ---------- 防遮挡（sidebar 展开 / 鼠标靠近）运行时状态 ----------
+       balanceShadeEl 是被监听的布局列（左侧 `_sidebarCol`，靠边停靠时换成
+       `_rightbarCol`），null 表示尚未发现或胶囊不在 DOM。观察器只在胶囊存在时
+       挂着，destroy 时一并断开。鼠标判定用「指针在胶囊中线 160px 竖带内且不
+       高于胶囊顶」——低频 mousemove 上用矩形测试，比逐帧 closest() 便宜。 */
+    let balanceSidebarRo = null
+    let balanceSidebarMo = null
+    let balanceShadeEl = null
+    let balanceSidebarOpen = false
+    let balanceHoverHide = false
+    let balanceHideRaf = 0
     // Non-zero while the brand pose is up: the wall-clock moment it was raised.
     let balanceBootAt = 0
     // Set by the first completed fetch, answer or not.
@@ -83,6 +94,134 @@
       && typeof window.matchMedia === 'function'
       && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
+    /* ---------- 防遮挡：状态合成与观察器 ----------
+       胶囊的隐藏态由两个独立原因合成（sidebar 展开有占位条常驻、指针靠近是
+       瞬时的），各自带设置页开关：balanceShadeApply() 在落盘前把两个原因
+       与各自开关相与，balanceShadeReason() 仍保留「原始原因合成」语义。
+       会话与遮挡无关，重新渲染会话时布局列节点可能被 React 重挂——所以
+       sidebarCol 缩放突变时由 ResizeObserver 自己重找目标（isConnected 守卫）。 */
+    const BALANCE_SIDEBAR_PROBE_ATTR = 'data-endfield-balance-sidebar-probe'
+    /* 每次判定都重读偏好（isBalanceSidebarHideOn / isBalanceHoverHideOn）：
+       设置页的开关是低频写入、判定是低频事件（列宽变化 / mousemove），重读
+       让开关即时生效而无需重建胶囊。开关刚关掉时残留的隐藏态由开关处理器
+       里的 balanceShadeApply() 同帧清除。 */
+    const balanceShadeReason = () => (balanceSidebarOpen || balanceHoverHide ? true : false)
+    const balanceShadeApply = () => {
+      if (balanceEl === null) return
+      const wantHide = (isBalanceSidebarHideOn() && balanceSidebarOpen)
+        || (isBalanceHoverHideOn() && balanceHoverHide)
+      if (wantHide) balanceEl.setAttribute('data-endfield-balance-shade', '')
+      else balanceEl.removeAttribute('data-endfield-balance-shade')
+    }
+    /* 在整份 DOM 里找当前布局的侧栏列。两个后缀在客户端 UI 里唯一属于布局
+       frame（`_centerCol`/`_sidebarCol`/`_rightbarCol`），位置选择决定盯哪根：
+       居中盯左栏（DSH 左栏是常驻 push 布局），靠右盯右栏。 */
+    const balanceSidebarSelector = () => {
+      const pos = readBalanceCapsulePosition()
+      return pos === 'right'
+        ? '[class$="_rightbarCol"], [class*="_rightbarCol "]'
+        : '[class$="_sidebarCol"], [class*="_sidebarCol "]'
+    }
+    const balanceFindSidebarCol = () => {
+      if (typeof document === 'undefined' || !document.querySelector) return null
+      try {
+        const nodes = document.querySelectorAll(balanceSidebarSelector())
+        for (let i = 0; i < nodes.length; i++) {
+          const node = nodes[i]
+          if (node && typeof node.isConnected === 'boolean' ? node.isConnected : true) return node
+        }
+      } catch (e) { /* selector 引擎不可用时不遮挡判定退化为关闭 */ }
+      return null
+    }
+    /* 列宽是否越过「展开」阈值。收起后的占位列仍有渲染宽度（骨架/图标条），
+       所以不能用 >0 判定：只在展开宽度明显大于收起条时才算遮挡。 */
+    const BALANCE_SIDEBAR_OPEN_PX = 96
+    const balanceShadeSync = () => {
+      if (balanceEl === null) return
+      let open = false
+      if (balanceShadeEl !== null && balanceShadeEl.isConnected !== false) {
+        const rect = balanceShadeEl.getBoundingClientRect()
+        open = rect.width >= BALANCE_SIDEBAR_OPEN_PX
+      }
+      if (open !== balanceSidebarOpen) {
+        balanceSidebarOpen = open
+        balanceShadeApply()
+      }
+    }
+    const balanceWatchSidebar = () => {
+      const col = balanceFindSidebarCol()
+      if (col === balanceShadeEl) return
+      if (balanceSidebarRo !== null) {
+        try { balanceSidebarRo.disconnect() } catch (e) { /* already gone */ }
+        balanceSidebarRo = null
+      }
+      if (balanceSidebarMo !== null) {
+        try { balanceSidebarMo.disconnect() } catch (e) { /* already gone */ }
+        balanceSidebarMo = null
+      }
+      balanceShadeEl = col
+      balanceSidebarOpen = false
+      if (col !== null && typeof ResizeObserver === 'function') {
+        balanceSidebarRo = new ResizeObserver(() => {
+          /* React 重挂列节点后旧引用会脱链——重启监听指向新节点。 */
+          if (balanceShadeEl !== null && balanceShadeEl.isConnected === false) {
+            balanceWatchSidebar()
+            return
+          }
+          balanceShadeSync()
+        })
+        try { balanceSidebarRo.observe(col) } catch (e) { balanceSidebarRo = null }
+      }
+      /* 布局列是惰性挂载的：首帧 querySelector 可能扑空，用 MutationObserver
+         盯 body 的子树变化，一旦列出现就换上 ResizeObserver。 */
+      if (col === null && balanceEl !== null && typeof MutationObserver === 'function' && typeof document !== 'undefined' && document.body) {
+        balanceSidebarMo = new MutationObserver(() => {
+          if (balanceEl === null) return
+          if (balanceFindSidebarCol() !== null) balanceWatchSidebar()
+        })
+        try { balanceSidebarMo.observe(document.body, { childList: true, subtree: true }) } catch (e) { balanceSidebarMo = null }
+      }
+      balanceShadeSync()
+    }
+    /* 鼠标靠近自动隐藏。pointer-events:none 让胶囊吃不到自己的事件，所以判定
+       挂在 window 的 mousemove 上，并用一个共享 rect 的几何测试（中线 ±160px、
+       顶向上 8px、底向下 12px 的呼吸余量）。节流到 rAF 一次；离开判定还带
+       240ms 的滞回，防止指针在边缘抖动时胶囊闪烁。 */
+    const BALANCE_HOVER_HALF_W = 160
+    const BALANCE_HOVER_TOP = -8
+    const BALANCE_HOVER_BOTTOM = 12
+    const BALANCE_HOVER_HYSTERESIS_MS = 240
+    let balanceHoverUntil = 0
+    const balanceHoverSync = (now) => {
+      const hide = now < balanceHoverUntil
+      if (hide !== balanceHoverHide) {
+        balanceHoverHide = hide
+        balanceShadeApply()
+      }
+    }
+    const balanceOnMouseMove = (ev) => {
+      if (balanceEl === null) return
+      const clientX = ev && typeof ev.clientX === 'number' ? ev.clientX : null
+      const clientY = ev && typeof ev.clientY === 'number' ? ev.clientY : null
+      if (clientX === null || clientY === null) return
+      const rect = balanceEl.getBoundingClientRect()
+      if (rect.width <= 0) return
+      const inside = clientX >= rect.left + rect.width / 2 - BALANCE_HOVER_HALF_W
+        && clientX <= rect.left + rect.width / 2 + BALANCE_HOVER_HALF_W
+        && clientY >= rect.top + BALANCE_HOVER_TOP
+        && clientY <= rect.bottom + BALANCE_HOVER_BOTTOM
+      const now = Date.now()
+      if (inside) balanceHoverUntil = now + BALANCE_HOVER_HYSTERESIS_MS
+      if (balanceHideRaf !== 0 || typeof cancelAnimationFrame !== 'function') {
+        balanceHoverSync(now)
+        return
+      }
+      balanceHideRaf = requestAnimationFrame(() => {
+        balanceHideRaf = 0
+        balanceHoverSync(Date.now())
+      })
+    }
+
     const destroyBalanceCapsule = () => {
       if (balanceTimer !== null && typeof clearInterval === 'function') {
         clearInterval(balanceTimer)
@@ -106,6 +245,25 @@
       creditProviderResolved = false
       creditsRebindAttempts = 0
       creditsWatchedStore = null
+      if (balanceSidebarRo !== null) {
+        try { balanceSidebarRo.disconnect() } catch (e) { /* already gone */ }
+        balanceSidebarRo = null
+      }
+      if (balanceSidebarMo !== null) {
+        try { balanceSidebarMo.disconnect() } catch (e) { /* already gone */ }
+        balanceSidebarMo = null
+      }
+      balanceShadeEl = null
+      balanceSidebarOpen = false
+      balanceHoverHide = false
+      balanceHoverUntil = 0
+      if (balanceHideRaf !== 0 && typeof cancelAnimationFrame === 'function') {
+        try { cancelAnimationFrame(balanceHideRaf) } catch (e) { /* already gone */ }
+      }
+      balanceHideRaf = 0
+      if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+        try { window.removeEventListener('mousemove', balanceOnMouseMove) } catch (e) { /* not attached */ }
+      }
       if (balanceEl !== null && balanceEl.parentNode) {
         try { balanceEl.parentNode.removeChild(balanceEl) } catch (e) { /* already gone */ }
       }

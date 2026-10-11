@@ -128,6 +128,9 @@ const FIELD_DEFAULTS = {
   thunderAnim: '0',         // 大字入场动画 —— default off
   balanceCapsule: '0',      // 顶部余额胶囊 —— default off
   creditDisplay: 'remaining', // 渠道额度主读数 —— remaining（剩余）| used（已用）
+  balanceCapsulePosition: 'center', // 余额胶囊位置 —— center（居中）| left（靠左）| right（靠右）
+  balanceCapsuleSidebarHide: '0',   // 防遮挡：侧边栏展开自动隐藏 —— default off
+  balanceCapsuleHoverHide: '1',     // 防遮挡：指针靠近自动隐藏 —— default on
   // --- 音频通知 ---------------------------------------------------------
   // Four live slots: the boot plate, the prompt that starts a turn, the final
   // answer that ends one, and `attention` for the two moments that actually

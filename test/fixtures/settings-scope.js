@@ -71,6 +71,9 @@ const FIELD_DEFAULTS = {
   thunderAnim: '0',
   balanceCapsule: '0',
   creditDisplay: 'remaining',
+  balanceCapsulePosition: 'center',
+  balanceCapsuleSidebarHide: '0',
+  balanceCapsuleHoverHide: '1',
   /* 音频通知 — same defaults as index.js FIELD_DEFAULTS. These names are already
      camelCase schema fields, so they pass through fieldName() unchanged; they are
      listed here so the fixture stays a faithful projection of the host schema
@@ -111,6 +114,9 @@ const KEY_TO_FIELD = {
   'dsh-theme-endfield-thunder-anim': 'thunderAnim',
   'dsh-theme-endfield-balance-capsule': 'balanceCapsule',
   'dsh-theme-endfield-credit-display': 'creditDisplay',
+  'dsh-theme-endfield-balance-capsule-position': 'balanceCapsulePosition',
+  'dsh-theme-endfield-balance-capsule-sidebar-hide': 'balanceCapsuleSidebarHide',
+  'dsh-theme-endfield-balance-capsule-hover-hide': 'balanceCapsuleHoverHide',
   /* Audio rows: the tail already equals the schema field, but the mapping is
      asserted to cover EVERY declared field, so they are listed like the rest. */
   'dsh-theme-endfield-audio-enabled': 'audioEnabled',

@@ -98,8 +98,15 @@ check('markup: every slot carries exactly one attribute, no duplicates',
 /* --- WIRING: the two halves agree --------------------------------------- */
 /* Runtime STATE attributes are written onto an existing slot rather than being
    slots themselves: the paint flips -phase-peak and the stylesheet keys off it,
-   and -boot is raised/cleared on the pill to switch poses. */
-const STATE_ATTRS = new Set(['data-endfield-balance-phase-peak', 'data-endfield-balance-boot'])
+   and -boot is raised/cleared on the pill to switch poses. -position docks the
+   pill (left/right; center is the attributeless base rule) and -shade is the
+   auto-hide flag the sidebar/pointer guards toggle. */
+const STATE_ATTRS = new Set([
+  'data-endfield-balance-phase-peak',
+  'data-endfield-balance-boot',
+  'data-endfield-balance-position',
+  'data-endfield-balance-shade',
+])
 const missing = [...slotsWritten].filter((s) => !STATE_ATTRS.has(s) && !slotsInMarkup.has(s))
 check('wiring: every painted slot exists in the markup (' + (missing.join(', ') || 'none missing') + ')',
   missing.length === 0)

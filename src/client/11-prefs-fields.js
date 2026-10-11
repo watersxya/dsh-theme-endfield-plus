@@ -30,6 +30,18 @@
     // a fast network; MAX is the cap when nothing ever answers.
     const BALANCE_BOOT_MIN_MS = 900
     const BALANCE_BOOT_MAX_MS = 5000
+    /* 胶囊停靠位与防遮挡的字面量集（设置页下拉与读取器共用） */
+    const BALANCE_POSITION_KEY = 'balanceCapsulePosition'
+    const BALANCE_POSITION_OPTIONS = ['center', 'left', 'right']
+    const readBalanceCapsulePosition = () => {
+      const v = prefsGet(BALANCE_POSITION_KEY)
+      return BALANCE_POSITION_OPTIONS.indexOf(v) >= 0 ? v : 'center'
+    }
+    /* 防遮挡子开关：default-ON（!== '0'），与主开关的读取惯例一致。 */
+    const BALANCE_SIDEBAR_HIDE_KEY = 'balanceCapsuleSidebarHide'
+    const BALANCE_HOVER_HIDE_KEY = 'balanceCapsuleHoverHide'
+    const isBalanceSidebarHideOn = () => prefsGet(BALANCE_SIDEBAR_HIDE_KEY) === '1'
+    const isBalanceHoverHideOn = () => prefsGet(BALANCE_HOVER_HIDE_KEY) !== '0'
     /* ---------- 渠道额度 (dsh-codearts-auth / jet-hub) ----------
        When the session's model directory names one of the providers the
        dsh-codearts-auth plugin serves, the capsule swaps the DeepSeek wallet

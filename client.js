@@ -190,6 +190,14 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
          不存在默认就错的答案，所以默认 used（与插件自身徽章一致的读法）。
          仅影响 credits 模式的右侧百分比槽位；左侧主数字始终为剩余额度。 */
       creditDisplay: 'remaining',
+      /* 余额胶囊的停靠位 —— center（顶部居中）| left（靠左）| right（靠右）。
+         仅当胶囊开启时有意义：选择靠边停靠可让开侧边栏与顶部工具栏的交叠区。 */
+      balanceCapsulePosition: 'center',
+      /* 防遮挡的两个子开关 —— 侧边栏展开自动隐藏 / 指针靠近自动隐藏。
+         default-ON：用户抱怨的就是遮挡，两个行为同时默认生效；单独关掉
+         其中一个的出口保留在这里（开关语义与其余 default-ON 一致：!== '0'）。 */
+      balanceCapsuleSidebarHide: '0',
+      balanceCapsuleHoverHide: '1',
       /* 音频通知 (host half: lib/audio.js). Two live slots — the prompt that
          starts a turn and the final answer that ends one. `audioAttention` and
          `audioTurnFail` are 预留: the sounds and switches ship, the triggers do
@@ -273,6 +281,9 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       'dsh-theme-endfield-thunder-anim': 'thunderAnim',
       'dsh-theme-endfield-balance-capsule': 'balanceCapsule',
       'dsh-theme-endfield-credit-display': 'creditDisplay',
+      'dsh-theme-endfield-balance-capsule-position': 'balanceCapsulePosition',
+      'dsh-theme-endfield-balance-capsule-sidebar-hide': 'balanceCapsuleSidebarHide',
+      'dsh-theme-endfield-balance-capsule-hover-hide': 'balanceCapsuleHoverHide',
       /* 音频通知. These tails happen to equal their schema fields, so every one of
          them would also resolve correctly through the prefix-strip fallback — they
          are listed explicitly because test/settings-namespace.test.js asserts that
@@ -352,6 +363,18 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
     // a fast network; MAX is the cap when nothing ever answers.
     const BALANCE_BOOT_MIN_MS = 900
     const BALANCE_BOOT_MAX_MS = 5000
+    /* 胶囊停靠位与防遮挡的字面量集（设置页下拉与读取器共用） */
+    const BALANCE_POSITION_KEY = 'balanceCapsulePosition'
+    const BALANCE_POSITION_OPTIONS = ['center', 'left', 'right']
+    const readBalanceCapsulePosition = () => {
+      const v = prefsGet(BALANCE_POSITION_KEY)
+      return BALANCE_POSITION_OPTIONS.indexOf(v) >= 0 ? v : 'center'
+    }
+    /* 防遮挡子开关：default-ON（!== '0'），与主开关的读取惯例一致。 */
+    const BALANCE_SIDEBAR_HIDE_KEY = 'balanceCapsuleSidebarHide'
+    const BALANCE_HOVER_HIDE_KEY = 'balanceCapsuleHoverHide'
+    const isBalanceSidebarHideOn = () => prefsGet(BALANCE_SIDEBAR_HIDE_KEY) === '1'
+    const isBalanceHoverHideOn = () => prefsGet(BALANCE_HOVER_HIDE_KEY) !== '0'
     /* ---------- 渠道额度 (dsh-codearts-auth / jet-hub) ----------
        When the session's model directory names one of the providers the
        dsh-codearts-auth plugin serves, the capsule swaps the DeepSeek wallet
@@ -4545,6 +4568,17 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
     let balanceTimer = null
     let balancePollTimer = null
     let balanceBusy = false
+    /* ---------- 防遮挡（sidebar 展开 / 鼠标靠近）运行时状态 ----------
+       balanceShadeEl 是被监听的布局列（左侧 `_sidebarCol`，靠边停靠时换成
+       `_rightbarCol`），null 表示尚未发现或胶囊不在 DOM。观察器只在胶囊存在时
+       挂着，destroy 时一并断开。鼠标判定用「指针在胶囊中线 160px 竖带内且不
+       高于胶囊顶」——低频 mousemove 上用矩形测试，比逐帧 closest() 便宜。 */
+    let balanceSidebarRo = null
+    let balanceSidebarMo = null
+    let balanceShadeEl = null
+    let balanceSidebarOpen = false
+    let balanceHoverHide = false
+    let balanceHideRaf = 0
     // Non-zero while the brand pose is up: the wall-clock moment it was raised.
     let balanceBootAt = 0
     // Set by the first completed fetch, answer or not.
@@ -4583,6 +4617,134 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       && typeof window.matchMedia === 'function'
       && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
+    /* ---------- 防遮挡：状态合成与观察器 ----------
+       胶囊的隐藏态由两个独立原因合成（sidebar 展开有占位条常驻、指针靠近是
+       瞬时的），各自带设置页开关：balanceShadeApply() 在落盘前把两个原因
+       与各自开关相与，balanceShadeReason() 仍保留「原始原因合成」语义。
+       会话与遮挡无关，重新渲染会话时布局列节点可能被 React 重挂——所以
+       sidebarCol 缩放突变时由 ResizeObserver 自己重找目标（isConnected 守卫）。 */
+    const BALANCE_SIDEBAR_PROBE_ATTR = 'data-endfield-balance-sidebar-probe'
+    /* 每次判定都重读偏好（isBalanceSidebarHideOn / isBalanceHoverHideOn）：
+       设置页的开关是低频写入、判定是低频事件（列宽变化 / mousemove），重读
+       让开关即时生效而无需重建胶囊。开关刚关掉时残留的隐藏态由开关处理器
+       里的 balanceShadeApply() 同帧清除。 */
+    const balanceShadeReason = () => (balanceSidebarOpen || balanceHoverHide ? true : false)
+    const balanceShadeApply = () => {
+      if (balanceEl === null) return
+      const wantHide = (isBalanceSidebarHideOn() && balanceSidebarOpen)
+        || (isBalanceHoverHideOn() && balanceHoverHide)
+      if (wantHide) balanceEl.setAttribute('data-endfield-balance-shade', '')
+      else balanceEl.removeAttribute('data-endfield-balance-shade')
+    }
+    /* 在整份 DOM 里找当前布局的侧栏列。两个后缀在客户端 UI 里唯一属于布局
+       frame（`_centerCol`/`_sidebarCol`/`_rightbarCol`），位置选择决定盯哪根：
+       居中盯左栏（DSH 左栏是常驻 push 布局），靠右盯右栏。 */
+    const balanceSidebarSelector = () => {
+      const pos = readBalanceCapsulePosition()
+      return pos === 'right'
+        ? '[class$="_rightbarCol"], [class*="_rightbarCol "]'
+        : '[class$="_sidebarCol"], [class*="_sidebarCol "]'
+    }
+    const balanceFindSidebarCol = () => {
+      if (typeof document === 'undefined' || !document.querySelector) return null
+      try {
+        const nodes = document.querySelectorAll(balanceSidebarSelector())
+        for (let i = 0; i < nodes.length; i++) {
+          const node = nodes[i]
+          if (node && typeof node.isConnected === 'boolean' ? node.isConnected : true) return node
+        }
+      } catch (e) { /* selector 引擎不可用时不遮挡判定退化为关闭 */ }
+      return null
+    }
+    /* 列宽是否越过「展开」阈值。收起后的占位列仍有渲染宽度（骨架/图标条），
+       所以不能用 >0 判定：只在展开宽度明显大于收起条时才算遮挡。 */
+    const BALANCE_SIDEBAR_OPEN_PX = 96
+    const balanceShadeSync = () => {
+      if (balanceEl === null) return
+      let open = false
+      if (balanceShadeEl !== null && balanceShadeEl.isConnected !== false) {
+        const rect = balanceShadeEl.getBoundingClientRect()
+        open = rect.width >= BALANCE_SIDEBAR_OPEN_PX
+      }
+      if (open !== balanceSidebarOpen) {
+        balanceSidebarOpen = open
+        balanceShadeApply()
+      }
+    }
+    const balanceWatchSidebar = () => {
+      const col = balanceFindSidebarCol()
+      if (col === balanceShadeEl) return
+      if (balanceSidebarRo !== null) {
+        try { balanceSidebarRo.disconnect() } catch (e) { /* already gone */ }
+        balanceSidebarRo = null
+      }
+      if (balanceSidebarMo !== null) {
+        try { balanceSidebarMo.disconnect() } catch (e) { /* already gone */ }
+        balanceSidebarMo = null
+      }
+      balanceShadeEl = col
+      balanceSidebarOpen = false
+      if (col !== null && typeof ResizeObserver === 'function') {
+        balanceSidebarRo = new ResizeObserver(() => {
+          /* React 重挂列节点后旧引用会脱链——重启监听指向新节点。 */
+          if (balanceShadeEl !== null && balanceShadeEl.isConnected === false) {
+            balanceWatchSidebar()
+            return
+          }
+          balanceShadeSync()
+        })
+        try { balanceSidebarRo.observe(col) } catch (e) { balanceSidebarRo = null }
+      }
+      /* 布局列是惰性挂载的：首帧 querySelector 可能扑空，用 MutationObserver
+         盯 body 的子树变化，一旦列出现就换上 ResizeObserver。 */
+      if (col === null && balanceEl !== null && typeof MutationObserver === 'function' && typeof document !== 'undefined' && document.body) {
+        balanceSidebarMo = new MutationObserver(() => {
+          if (balanceEl === null) return
+          if (balanceFindSidebarCol() !== null) balanceWatchSidebar()
+        })
+        try { balanceSidebarMo.observe(document.body, { childList: true, subtree: true }) } catch (e) { balanceSidebarMo = null }
+      }
+      balanceShadeSync()
+    }
+    /* 鼠标靠近自动隐藏。pointer-events:none 让胶囊吃不到自己的事件，所以判定
+       挂在 window 的 mousemove 上，并用一个共享 rect 的几何测试（中线 ±160px、
+       顶向上 8px、底向下 12px 的呼吸余量）。节流到 rAF 一次；离开判定还带
+       240ms 的滞回，防止指针在边缘抖动时胶囊闪烁。 */
+    const BALANCE_HOVER_HALF_W = 160
+    const BALANCE_HOVER_TOP = -8
+    const BALANCE_HOVER_BOTTOM = 12
+    const BALANCE_HOVER_HYSTERESIS_MS = 240
+    let balanceHoverUntil = 0
+    const balanceHoverSync = (now) => {
+      const hide = now < balanceHoverUntil
+      if (hide !== balanceHoverHide) {
+        balanceHoverHide = hide
+        balanceShadeApply()
+      }
+    }
+    const balanceOnMouseMove = (ev) => {
+      if (balanceEl === null) return
+      const clientX = ev && typeof ev.clientX === 'number' ? ev.clientX : null
+      const clientY = ev && typeof ev.clientY === 'number' ? ev.clientY : null
+      if (clientX === null || clientY === null) return
+      const rect = balanceEl.getBoundingClientRect()
+      if (rect.width <= 0) return
+      const inside = clientX >= rect.left + rect.width / 2 - BALANCE_HOVER_HALF_W
+        && clientX <= rect.left + rect.width / 2 + BALANCE_HOVER_HALF_W
+        && clientY >= rect.top + BALANCE_HOVER_TOP
+        && clientY <= rect.bottom + BALANCE_HOVER_BOTTOM
+      const now = Date.now()
+      if (inside) balanceHoverUntil = now + BALANCE_HOVER_HYSTERESIS_MS
+      if (balanceHideRaf !== 0 || typeof cancelAnimationFrame !== 'function') {
+        balanceHoverSync(now)
+        return
+      }
+      balanceHideRaf = requestAnimationFrame(() => {
+        balanceHideRaf = 0
+        balanceHoverSync(Date.now())
+      })
+    }
+
     const destroyBalanceCapsule = () => {
       if (balanceTimer !== null && typeof clearInterval === 'function') {
         clearInterval(balanceTimer)
@@ -4606,6 +4768,25 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       creditProviderResolved = false
       creditsRebindAttempts = 0
       creditsWatchedStore = null
+      if (balanceSidebarRo !== null) {
+        try { balanceSidebarRo.disconnect() } catch (e) { /* already gone */ }
+        balanceSidebarRo = null
+      }
+      if (balanceSidebarMo !== null) {
+        try { balanceSidebarMo.disconnect() } catch (e) { /* already gone */ }
+        balanceSidebarMo = null
+      }
+      balanceShadeEl = null
+      balanceSidebarOpen = false
+      balanceHoverHide = false
+      balanceHoverUntil = 0
+      if (balanceHideRaf !== 0 && typeof cancelAnimationFrame === 'function') {
+        try { cancelAnimationFrame(balanceHideRaf) } catch (e) { /* already gone */ }
+      }
+      balanceHideRaf = 0
+      if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+        try { window.removeEventListener('mousemove', balanceOnMouseMove) } catch (e) { /* not attached */ }
+      }
       if (balanceEl !== null && balanceEl.parentNode) {
         try { balanceEl.parentNode.removeChild(balanceEl) } catch (e) { /* already gone */ }
       }
@@ -5309,6 +5490,20 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       document.body.appendChild(el)
       balanceEl = el
       balanceBootAnswered = false
+      /* 停靠位：CSS 在 [data-endfield-balance-position='left'|'right'] 上换
+         top/left 定位；居中是基规则，不需要属性。位置偏好变化走
+         syncBalanceCapsule -> showBalanceCapsule（destroy 重建），所以这里
+         一次性写入即可，运行期不会漂移。 */
+      const bootPosition = readBalanceCapsulePosition()
+      if (bootPosition !== 'center') el.setAttribute('data-endfield-balance-position', bootPosition)
+      /* 防遮挡接线（33 片段定义观察器）：先清一次隐藏态，再挂侧栏监听与
+         window mousemove —— 挂载失败（stub 环境）时两个判定保持关闭。 */
+      balanceSidebarOpen = false
+      balanceHoverHide = false
+      balanceWatchSidebar()
+      if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        try { window.addEventListener('mousemove', balanceOnMouseMove) } catch (e) { /* stub */ }
+      }
       if (bootAnimated) {
         // Raised before the first paint, so the pill never flashes the settled
         // row on its way into the pose.
@@ -5338,13 +5533,22 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       }
     }
 
+    /* True when a live pill carries a docking attribute that no longer matches
+       the preference (a centered pill mounts with NO attribute). Kept out of
+       syncBalanceCapsule so the mount call stays that function's only job. */
+    const balancePositionChanged = () => {
+      if (balanceEl === null) return false
+      const want = readBalanceCapsulePosition()
+      return balanceEl.getAttribute('data-endfield-balance-position') !== (want === 'center' ? null : want)
+    }
+
     const syncBalanceCapsule = () => {
       if (!(isEnabled() && isBalanceCapsuleOn())) {
         destroyBalanceCapsule()
         return
       }
-      // showBalanceCapsule() is idempotent (guards on balanceEl), so re-syncing
-      // while already mounted just re-asserts the same state.
+      // Rebuild when the dock changed; a plain sync stays motion-aware.
+      if (balancePositionChanged()) destroyBalanceCapsule()
       showBalanceCapsule()
     }
 
@@ -7701,7 +7905,9 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
           height 420ms cubic-bezier(0.22, 0.72, 0.2, 1),
           min-width 420ms cubic-bezier(0.22, 0.72, 0.2, 1),
           padding 420ms cubic-bezier(0.22, 0.72, 0.2, 1),
-          --endfield-balance-cap 420ms cubic-bezier(0.22, 0.72, 0.2, 1);
+          --endfield-balance-cap 420ms cubic-bezier(0.22, 0.72, 0.2, 1),
+          opacity 180ms ease,
+          transform 240ms cubic-bezier(0.22, 0.72, 0.2, 1);
       }
       /* Boot pose: the brand panel from the reference — 448x72 — held while the
          first account answer is still in flight. JS drops the attribute once the
@@ -8019,6 +8225,34 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
           display: none;
         }
       }
+      /* ---------- 防遮挡：停靠位变体与自动隐藏 ----------
+         停靠位由胶囊上的 data-endfield-balance-position 属性选择（center 是
+         基规则本身，不需要属性）：靠左贴着左栏外缘留 8px，靠右对称。位置
+         变体只动定位三件套，轮廓（渐变端盘 + stadium）与内部排版不动，所以
+         任何停靠位下胶囊都保持同一形状。 */
+      [data-endfield-balance][data-endfield-balance-position='left'] {
+        top: 6px;
+        left: 8px;
+        transform: none;
+      }
+      [data-endfield-balance][data-endfield-balance-position='right'] {
+        top: 6px;
+        left: auto;
+        right: 8px;
+        transform: none;
+      }
+      /* 自动隐藏（侧边栏展开 / 指针靠近）写成单属性渐隐：JS 只切换
+         data-endfield-balance-shade，视觉在 CSS 里完成。透明之外再向上收
+         6px 并关掉 hit-test 的余地（pointer-events 本来就是 none），过渡走
+         基规则已声明的 opacity/transform 通道，遮挡消失后原路淡回。boot
+         姿态期间被遮挡时同样收起——开场动画是装饰，遮挡是事实。 */
+      [data-endfield-balance][data-endfield-balance-shade] {
+        opacity: 0;
+        transform: translateX(-50%) translateY(-6px);
+      }
+      [data-endfield-balance][data-endfield-balance-shade][data-endfield-balance-position] {
+        transform: translateY(-6px);
+      }
     `)
       syncRadiusMode()
       syncGlass()
@@ -8180,6 +8414,9 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       groupBg: '背景',
       groupAnim: '动画',
       groupFun: '娱乐',
+      /* 折叠分组：组头是「编号 名称」加一个随展开态翻转的箭头；
+         展开后的「收起」提示放在箭头的 title 上而非行内，收起的
+         五个组头并排时行内文案会重复五次。 */
       themeRow: '终末地主题',
       themeOn: '开启主题',
       themeOff: '关闭主题',
@@ -8280,6 +8517,19 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       balanceHintOn: '在页面顶部中间悬浮显示账户余额与峰谷定价时段（每分钟刷新余额，时段倒计时每秒走字；右侧「预览」可重播开场动画）',
       balanceHintOff: '默认关闭；开启后悬浮显示余额与峰谷时段（高峰为工作日 9-12 点、14-18 点；周末、法定节假日全天、以及落在周末的调休上班日都按低谷半价）',
       balanceNeed: '请先开启顶部余额胶囊',
+      balancePositionRow: '胶囊位置',
+      balancePositionCenter: '顶部居中',
+      balancePositionLeft: '靠左',
+      balancePositionRight: '靠右',
+      balancePositionHint: '切换胶囊的停靠位；靠边停靠可让开侧边栏与顶部内容的交叠区，切换立即生效',
+      balanceSidebarHideRow: '侧栏自动隐藏',
+      balanceSidebarHideHintOn: '侧边栏展开时胶囊自动淡出让位，收起后恢复显示（默认关闭，可在此开启）',
+      balanceSidebarHideHintOff: '侧边栏展开时胶囊保持显示，可能遮挡侧栏顶部内容（默认不隐藏）',
+      balanceSidebarHideNeed: '请先开启顶部余额胶囊',
+      balanceHoverHideRow: '靠近自动隐藏',
+      balanceHoverHideHintOn: '指针移到胶囊附近时自动淡出，移开后恢复（避免挡住下方文字）',
+      balanceHoverHideHintOff: '指针靠近时胶囊保持显示',
+      balanceHoverHideNeed: '请先开启顶部余额胶囊',
       creditDisplayRow: '渠道额度读数',
       creditDisplayRemaining: '剩余',
       creditDisplayUsed: '已用',
@@ -8448,6 +8698,19 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       balanceHintOn: 'Floats a capsule at the top centre of the page showing your account balance and the API peak/off-peak pricing window (balance every minute, window countdown every second; Preview on the right replays the opening animation)',
       balanceHintOff: 'Off by default; floats a balance + pricing-window capsule (peak = weekdays 9-12 & 14-18 Beijing; weekends, Chinese statutory holidays and make-up workdays that land on a weekend are off-peak, half price)',
       balanceNeed: 'Turn on the balance capsule first',
+      balancePositionRow: 'Capsule position',
+      balancePositionCenter: 'Top centre',
+      balancePositionLeft: 'Left',
+      balancePositionRight: 'Right',
+      balancePositionHint: 'Choose where the capsule docks; an edge dock keeps it clear of the sidebar and the top content. The change applies immediately',
+      balanceSidebarHideRow: 'Sidebar auto-hide',
+      balanceSidebarHideHintOn: 'Fades the capsule away while the sidebar is open and restores it when the sidebar closes (off by default; turn it on here)',
+      balanceSidebarHideHintOff: 'The capsule stays visible while the sidebar is open and may cover sidebar content (the default; no auto-hide)',
+      balanceSidebarHideNeed: 'Turn on the balance capsule first',
+      balanceHoverHideRow: 'Pointer auto-hide',
+      balanceHoverHideHintOn: 'Fades the capsule away while the pointer is near and restores it afterwards (keeps the text below readable)',
+      balanceHoverHideHintOff: 'The capsule stays visible while the pointer is near',
+      balanceHoverHideNeed: 'Turn on the balance capsule first',
       creditDisplayRow: 'Channel credits readout',
       creditDisplayRemaining: 'Remaining',
       creditDisplayUsed: 'Used',
@@ -8575,6 +8838,9 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
           const [thunderOn, setThunderOn] = R.useState(isThunderOn())
           const [thunderAnim, setThunderAnim] = R.useState(isThunderAnimOn())
           const [balanceOn, setBalanceOn] = R.useState(isBalanceCapsuleOn())
+          const [balancePosition, setBalancePosition] = R.useState(readBalanceCapsulePosition())
+          const [balanceSidebarHide, setBalanceSidebarHide] = R.useState(isBalanceSidebarHideOn())
+          const [balanceHoverHide, setBalanceHoverHide] = R.useState(isBalanceHoverHideOn())
           const [creditDisplay, setCreditDisplay] = R.useState(readCreditDisplay())
           const [palette, setPalette] = R.useState(readPalette())
           const [glass, setGlass] = R.useState(readGlass())
@@ -8646,6 +8912,9 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
               setThunderOn(isThunderOn())
               setThunderAnim(isThunderAnimOn())
               setBalanceOn(isBalanceCapsuleOn())
+              setBalancePosition(readBalanceCapsulePosition())
+              setBalanceSidebarHide(isBalanceSidebarHideOn())
+              setBalanceHoverHide(isBalanceHoverHideOn())
               setCreditDisplay(readCreditDisplay())
               setPalette(readPalette())
               setGlass(readGlass())
@@ -8901,6 +9170,39 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
             if (CREDIT_DISPLAY_OPTIONS.indexOf(value) === -1) return
             prefsSet(CREDIT_DISPLAY_KEY, value)
             setCreditDisplay(value)
+          }
+          /* 停靠位 is a select like the credit readout: three literals, one meaning
+             ("where does the pill dock"), no polarity. syncBalanceCapsule() rebuilds
+             the live capsule (destroy -> remount) when the position changed, so the
+             move is visible immediately; with the capsule off the write simply waits
+             for the next mount. */
+          const BALANCE_POSITION_SELECT_OPTIONS = BALANCE_POSITION_OPTIONS
+          const setBalancePositionValue = (value) => {
+            if (BALANCE_POSITION_SELECT_OPTIONS.indexOf(value) === -1) return
+            prefsSet(BALANCE_POSITION_KEY, value)
+            setBalancePosition(value)
+            syncBalanceCapsule()
+          }
+          /* 防遮挡子开关 are polar toggles like the master switch: each writes
+             its default-ON field and mirrors into React state. The live capsule
+             picks both values up on its NEXT shade decision (every sidebar
+             resize and mousemove re-reads the pref store), so no rebuild is
+             needed — but a switch turned OFF while the capsule is currently
+             hidden must un-hide it immediately, which syncBalanceCapsule's
+             plain re-show does not do. balanceShadeApply() re-derives from the
+             store, so calling it (when a pill is live) clears the stale shade
+             on the same tick. */
+          const toggleBalanceSidebarHide = () => {
+            const next = !isBalanceSidebarHideOn()
+            prefsSet(BALANCE_SIDEBAR_HIDE_KEY, next ? '1' : '0')
+            setBalanceSidebarHide(next)
+            if (typeof balanceShadeApply === 'function') balanceShadeApply()
+          }
+          const toggleBalanceHoverHide = () => {
+            const next = !isBalanceHoverHideOn()
+            prefsSet(BALANCE_HOVER_HIDE_KEY, next ? '1' : '0')
+            setBalanceHoverHide(next)
+            if (typeof balanceShadeApply === 'function') balanceShadeApply()
           }
           /* 预览: the opening pose is a one-shot moment — a real load shows it once
              and there is no reload button on the settings page. Remounting the
@@ -9358,7 +9660,7 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
                 }, t(thunderAnim ? 'thunderAnimOff' : 'thunderAnimOn'))
               ]),
               /* --- 顶部余额胶囊：同样属于「娱乐」组的悬浮层 --- */
-              row('balance-capsule', true, [
+              row('balance-capsule', false, [
                 R.createElement('span', { style: labelStyle },
                   t('balanceRow') + t('sep') + stateOf(balanceOn),
                   R.createElement('span', { style: hintStyle },
@@ -9383,6 +9685,60 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
                     style: btnStyleFor(balanceOn),
                   }, t(balanceOn ? 'balanceOff' : 'balanceOn'))
                 )
+              ]),
+              /* --- 胶囊位置 + 防遮挡：停靠位是三档 select，行为在胶囊上 ---
+                 The select mirrors the credit-display row; the hint names BOTH
+                 automatic hiding rules (sidebar open / pointer nearby) so the
+                 behaviour is discoverable without reading the source. The row is
+                 only meaningful while the capsule is on, but the select stays
+                 enabled: writing a dock with the capsule off is a valid
+                 pre-configuration that the next mount honours. */
+              row('balance-capsule-position', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('balancePositionRow') + t('sep') + t('balancePosition' + balancePosition.charAt(0).toUpperCase() + balancePosition.slice(1)),
+                  R.createElement('span', { style: hintStyle },
+                    t('balancePositionHint')
+                  )
+                ),
+                R.createElement('select', {
+                  'aria-label': t('balancePositionRow'), value: balancePosition,
+                  onChange: (event) => setBalancePositionValue(event.target.value),
+                  style: { color: 'var(--dsw-alias-label-primary)', background: 'var(--dsw-alias-bg-layer-1)',
+                    border: '1px solid var(--dsw-alias-border-l2)', padding: '6px 10px' },
+                }, BALANCE_POSITION_SELECT_OPTIONS.map((value) => R.createElement('option', { key: value, value },
+                  t('balancePosition' + value.charAt(0).toUpperCase() + value.slice(1)))))
+              ]),
+              /* --- 防遮挡两个子开关：侧栏展开自动隐藏 / 指针靠近自动隐藏 ---
+                 Both ship ON because the遮挡 they answer is what the capsule
+                 rows exist for; each toggle can silence its rule individually.
+                 The switches stay enabled with the capsule off (a
+                 pre-configuration the next mount honours), mirroring the
+                 position select above; the hint states what fades and when. */
+              row('balance-capsule-sidebar-hide', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('balanceSidebarHideRow') + t('sep') + stateOf(balanceSidebarHide),
+                  R.createElement('span', { style: hintStyle },
+                    t(balanceSidebarHide ? 'balanceSidebarHideHintOn' : 'balanceSidebarHideHintOff')
+                  )
+                ),
+                R.createElement('button', {
+                  type: 'button',
+                  onClick: toggleBalanceSidebarHide,
+                  style: btnStyleFor(balanceSidebarHide),
+                }, t(balanceSidebarHide ? 'balanceOff' : 'balanceOn'))
+              ]),
+              row('balance-capsule-hover-hide', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('balanceHoverHideRow') + t('sep') + stateOf(balanceHoverHide),
+                  R.createElement('span', { style: hintStyle },
+                    t(balanceHoverHide ? 'balanceHoverHideHintOn' : 'balanceHoverHideHintOff')
+                  )
+                ),
+                R.createElement('button', {
+                  type: 'button',
+                  onClick: toggleBalanceHoverHide,
+                  style: btnStyleFor(balanceHoverHide),
+                }, t(balanceHoverHide ? 'balanceOff' : 'balanceOn'))
               ]),
               /* --- 渠道额度读数：右侧百分比显示已用 or 剩余 ---
                  The row lives directly under the capsule switch because it only

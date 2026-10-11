@@ -97,6 +97,14 @@
          不存在默认就错的答案，所以默认 used（与插件自身徽章一致的读法）。
          仅影响 credits 模式的右侧百分比槽位；左侧主数字始终为剩余额度。 */
       creditDisplay: 'remaining',
+      /* 余额胶囊的停靠位 —— center（顶部居中）| left（靠左）| right（靠右）。
+         仅当胶囊开启时有意义：选择靠边停靠可让开侧边栏与顶部工具栏的交叠区。 */
+      balanceCapsulePosition: 'center',
+      /* 防遮挡的两个子开关 —— 侧边栏展开自动隐藏 / 指针靠近自动隐藏。
+         default-ON：用户抱怨的就是遮挡，两个行为同时默认生效；单独关掉
+         其中一个的出口保留在这里（开关语义与其余 default-ON 一致：!== '0'）。 */
+      balanceCapsuleSidebarHide: '0',
+      balanceCapsuleHoverHide: '1',
       /* 音频通知 (host half: lib/audio.js). Two live slots — the prompt that
          starts a turn and the final answer that ends one. `audioAttention` and
          `audioTurnFail` are 预留: the sounds and switches ship, the triggers do
@@ -180,6 +188,9 @@
       'dsh-theme-endfield-thunder-anim': 'thunderAnim',
       'dsh-theme-endfield-balance-capsule': 'balanceCapsule',
       'dsh-theme-endfield-credit-display': 'creditDisplay',
+      'dsh-theme-endfield-balance-capsule-position': 'balanceCapsulePosition',
+      'dsh-theme-endfield-balance-capsule-sidebar-hide': 'balanceCapsuleSidebarHide',
+      'dsh-theme-endfield-balance-capsule-hover-hide': 'balanceCapsuleHoverHide',
       /* 音频通知. These tails happen to equal their schema fields, so every one of
          them would also resolve correctly through the prefix-strip fallback — they
          are listed explicitly because test/settings-namespace.test.js asserts that

@@ -2198,7 +2198,9 @@
           height 420ms cubic-bezier(0.22, 0.72, 0.2, 1),
           min-width 420ms cubic-bezier(0.22, 0.72, 0.2, 1),
           padding 420ms cubic-bezier(0.22, 0.72, 0.2, 1),
-          --endfield-balance-cap 420ms cubic-bezier(0.22, 0.72, 0.2, 1);
+          --endfield-balance-cap 420ms cubic-bezier(0.22, 0.72, 0.2, 1),
+          opacity 180ms ease,
+          transform 240ms cubic-bezier(0.22, 0.72, 0.2, 1);
       }
       /* Boot pose: the brand panel from the reference — 448x72 — held while the
          first account answer is still in flight. JS drops the attribute once the
@@ -2515,4 +2517,32 @@
         [data-endfield-balance] [data-endfield-balance-window] {
           display: none;
         }
+      }
+      /* ---------- 防遮挡：停靠位变体与自动隐藏 ----------
+         停靠位由胶囊上的 data-endfield-balance-position 属性选择（center 是
+         基规则本身，不需要属性）：靠左贴着左栏外缘留 8px，靠右对称。位置
+         变体只动定位三件套，轮廓（渐变端盘 + stadium）与内部排版不动，所以
+         任何停靠位下胶囊都保持同一形状。 */
+      [data-endfield-balance][data-endfield-balance-position='left'] {
+        top: 6px;
+        left: 8px;
+        transform: none;
+      }
+      [data-endfield-balance][data-endfield-balance-position='right'] {
+        top: 6px;
+        left: auto;
+        right: 8px;
+        transform: none;
+      }
+      /* 自动隐藏（侧边栏展开 / 指针靠近）写成单属性渐隐：JS 只切换
+         data-endfield-balance-shade，视觉在 CSS 里完成。透明之外再向上收
+         6px 并关掉 hit-test 的余地（pointer-events 本来就是 none），过渡走
+         基规则已声明的 opacity/transform 通道，遮挡消失后原路淡回。boot
+         姿态期间被遮挡时同样收起——开场动画是装饰，遮挡是事实。 */
+      [data-endfield-balance][data-endfield-balance-shade] {
+        opacity: 0;
+        transform: translateX(-50%) translateY(-6px);
+      }
+      [data-endfield-balance][data-endfield-balance-shade][data-endfield-balance-position] {
+        transform: translateY(-6px);
       }

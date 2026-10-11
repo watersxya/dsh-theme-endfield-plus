@@ -642,10 +642,13 @@ async function main() {
        grown the balanceCapsule switch (inserted right after thunderAnim), then
        the creditDisplay select (inserted right after balanceCapsule), and then
        the two 输出滚动动画 hooks (scrollAnim + scrollAnimLevel, inserted right
-       after contourScrollPause), so palette moved to the 18th slot — the index
+       after contourScrollPause), and then the balancePosition select (inserted
+       right after balanceCapsule), and then the two 防遮挡 toggle hooks
+       (balanceSidebarHide + balanceHoverHide, inserted right after
+       balancePosition), so palette moved to the 21st slot — the index
        tracks the panel's hook order, and this assertion is exactly why a silent
        reorder must not pass. */
-    const paletteSlot = hooks[17]
+    const paletteSlot = hooks[20]
     if (paletteSlot === 'wuling') {
       pass('panel hook state adopted the served palette (slot moved off its default)')
     } else {

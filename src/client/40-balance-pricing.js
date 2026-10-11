@@ -349,6 +349,20 @@
       document.body.appendChild(el)
       balanceEl = el
       balanceBootAnswered = false
+      /* 停靠位：CSS 在 [data-endfield-balance-position='left'|'right'] 上换
+         top/left 定位；居中是基规则，不需要属性。位置偏好变化走
+         syncBalanceCapsule -> showBalanceCapsule（destroy 重建），所以这里
+         一次性写入即可，运行期不会漂移。 */
+      const bootPosition = readBalanceCapsulePosition()
+      if (bootPosition !== 'center') el.setAttribute('data-endfield-balance-position', bootPosition)
+      /* 防遮挡接线（33 片段定义观察器）：先清一次隐藏态，再挂侧栏监听与
+         window mousemove —— 挂载失败（stub 环境）时两个判定保持关闭。 */
+      balanceSidebarOpen = false
+      balanceHoverHide = false
+      balanceWatchSidebar()
+      if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        try { window.addEventListener('mousemove', balanceOnMouseMove) } catch (e) { /* stub */ }
+      }
       if (bootAnimated) {
         // Raised before the first paint, so the pill never flashes the settled
         // row on its way into the pose.
@@ -378,12 +392,21 @@
       }
     }
 
+    /* True when a live pill carries a docking attribute that no longer matches
+       the preference (a centered pill mounts with NO attribute). Kept out of
+       syncBalanceCapsule so the mount call stays that function's only job. */
+    const balancePositionChanged = () => {
+      if (balanceEl === null) return false
+      const want = readBalanceCapsulePosition()
+      return balanceEl.getAttribute('data-endfield-balance-position') !== (want === 'center' ? null : want)
+    }
+
     const syncBalanceCapsule = () => {
       if (!(isEnabled() && isBalanceCapsuleOn())) {
         destroyBalanceCapsule()
         return
       }
-      // showBalanceCapsule() is idempotent (guards on balanceEl), so re-syncing
-      // while already mounted just re-asserts the same state.
+      // Rebuild when the dock changed; a plain sync stays motion-aware.
+      if (balancePositionChanged()) destroyBalanceCapsule()
       showBalanceCapsule()
     }
