@@ -63,6 +63,35 @@ jobs:
             exit 1
           fi
 
+      # 测试清单里大量用例要开 headless 浏览器。ci.yml 里这套前置条件必须一起搬过来，
+      # 否则它们整批报 "no Chrome/Edge found (set CHROME_PATH)" —— 第一次 tag 发布
+      # 就是这样被挡下的，看着像测试坏了，其实是环境没铺。
+      - name: 定位 Chrome
+        run: |
+          p="$(command -v google-chrome || command -v google-chrome-stable \
+            || command -v chromium-browser || command -v chromium || true)"
+          if [ -z "$p" ]; then
+            echo "::error title=环境缺失::runner 上找不到 Chrome/Chromium，浏览器测试无法运行"
+            exit 1
+          fi
+          echo "CHROME_PATH=$p" >> "$GITHUB_ENV"
+          echo "使用 $p"
+          "$p" --version
+
+      # 这些测试用 `'file:///' + 绝对路径` 拼 URL，该拼法只在 Windows 上天然正确。
+      # 先探一次，万一失效就给出明确诊断，而不是让一批测试一起神秘失败。
+      - name: headless Chrome 冒烟检查
+        run: |
+          tmp="$(mktemp -d)"
+          printf '<!doctype html><title>SMOKE-OK</title>' > "$tmp/probe.html"
+          url="file:///$tmp/probe.html"
+          dom="$("$CHROME_PATH" --headless=new --disable-gpu --no-sandbox \
+            --user-data-dir="$(mktemp -d)" --dump-dom "$url" 2>/dev/null || true)"
+          case "$dom" in
+            *SMOKE-OK*) echo "ok    headless Chrome 可通过 'file:///'+绝对路径 加载页面" ;;
+            *) echo "::error title=file URL 拼法在 Linux 上失效::headless Chrome 打不开 $url"; exit 1 ;;
+          esac
+
       # 复用仓库已有的清单解析脚本，与 ci.yml 跑同一套，发布前先挡红。
       - name: 跑测试套件
         run: node .github/scripts/run-tests.js test:ci
