@@ -6119,14 +6119,103 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       [class*='_frame']:has(> [data-endfield-contour]) [class$='_sidebarCol'] {
         background: transparent !important;
       }
-      /* The composer seat fades content out behind the input with a gradient to
-         bg-base. Left alone it would show as an opaque band cutting across the
-         sheet, so it fades to the base colour with alpha instead — same visual
-         falloff, but the contour stays continuous underneath. */
-      [class*='_frame']:has(> [data-endfield-contour]) [class$='_composerSeat'] {
-        background: linear-gradient(180deg,
-          rgba(0, 0, 0, 0) 0px,
-          color-mix(in srgb, var(--dsw-alias-bg-base) 82%, transparent) 36px) !important;
+      /* Composer seat (issue #36). The app veils the region behind the input so
+         messages scrolling up out of the conversation fade away instead of being
+         cut off by the composer's top edge:
+             .*_root[data-phase=active] .*_composerSeat
+             .*_embeddedBody[data-content-phase=active] .*_composerSeat {
+               background: linear-gradient(180deg,
+                 color-mix(in srgb, var(--dsw-alias-bg-base) 0%, transparent) 0px,
+                 var(--dsw-alias-bg-base) 36px) }
+         CSS extends a gradient's last stop to the end of the box, so everything
+         below 36px is solid bg-base: an opaque band lying across the sheet. The
+         theme answered that by re-running the same ramp at 82% alpha, which dulls
+         the contour to roughly a fifth of its edge contrast (the report measures
+         33 -> 4-6). A near-opaque layer over the sheet washes the lines out no
+         matter how it is shaped, because the sheet is BELOW both the content and
+         the veil.
+
+         So the seat is cleared outright, like the frame, the columns and the
+         sidebar above: one continuous sheet, no belt behind the input. The input
+         card itself (.RlGAzG_card) keeps its own opaque --dsw-specific-input-major
+         surface, so the composer still reads as a surface — what changes is that
+         messages now meet the card's edge squarely instead of dissolving into it.
+         That is the whole trade-off, and this one declaration is the lever: to buy
+         the soft fade back, put a gradient here and accept the lines being dulled
+         in the seat. Sheet continuity is the theme's stated priority throughout
+         this section; this is the same call made once more.
+
+         PHASE GATING. The app paints the veil in the active phase only, and the
+         hero (new-session) phase paints none at all — the hero composer is a
+         centred card that covers nothing. The previous rule applied in every
+         phase, so the hero page carried a veil the app never draws. Matching the
+         app's own two phases means the theme only ever overrides a background the
+         app actually set. */
+      [class*='_frame']:has(> [data-endfield-contour]) :is([data-phase='active'], [data-content-phase='active']) [class$='_composerSeat'] {
+        background: transparent !important;
+      }
+      /* Session-list bottom fade (issue #36). @deepseek-ai/dsh-client-ui-workspace
+         paints a 24px span at the bottom of the sidebar tree:
+             .*_fade { background: linear-gradient(to bottom, transparent,
+                       var(--dsw-specific-sidebar-fill)); height: 24px;
+                       position: absolute; bottom: 0 }
+         and this theme sets --dsw-specific-sidebar-fill to exactly the colour of
+         --dsw-alias-bg-base (see the sidebar rule above), so that span is an opaque
+         end-stop across the full sidebar width. With the contour on it cuts a belt
+         out of the sheet under the last session rows — the second band reported.
+
+         Matched by the '_fade' SUFFIX, never the '_fade' substring: the workspace
+         bundle also ships _fadeTop / _fadeBottom and a _fade-in keyframe elsewhere,
+         and only the suffix anchor keeps them out of reach.
+
+         TRADE-OFF, stated rather than hidden: clearing this background drops the
+         app's fade-out of the last session rows, so when the list overflows the
+         final row meets the account row with no gradient. The continuous sheet is
+         this theme's stated priority for the sidebar (see the sidebarCol rule
+         above); preferring list-overflow legibility instead means reverting this
+         one rule and accepting the belt. */
+      [class*='_frame']:has(> [data-endfield-contour]) [class$='_sidebarCol'] [class$='_fade'] {
+        background: transparent !important;
+      }
+      /* Windows title bar (issue #36). Two opaque layers stack over the top 40px on
+         Windows and BOTH have to go, or the sheet is still invisible there:
+           1. page side — [data-windows-titlebar] .*_frame:before paints
+              var(--dsw-specific-sidebar-fill) across the title-bar strip (the
+              frame's own background, which uses the same colour, is already
+              cleared by the rule above);
+           2. native side — Electron's title-bar overlay, which the desktop shell
+              colours from a hidden probe element it appends to <body>: the probe
+              carries background-color: var(--dsw-specific-sidebar-fill) inline,
+              and the shell pushes its COMPUTED background through
+              setTitleBarOverlay(). That overlay is drawn by the OS above the web
+              content, so no page-level rule can uncover the sheet through it.
+         Page side first: */
+      [class*='_frame']:has(> [data-endfield-contour])::before {
+        background: transparent !important;
+      }
+      /* Native side. The probe's declaration is inline and carries no !important,
+         and an author !important declaration outranks a normal inline one, so
+         overriding ONLY its background-color reports a fully transparent colour to
+         setTitleBarOverlay() and the OS overlay stops covering the sheet.
+
+         WHY 'color' IS LEFT ALONE: the same probe reports the overlay's symbol
+         colour, so a transparent symbol colour would erase the window buttons.
+         Only the background is overridden here, which keeps their contrast.
+
+         WHY html:has() AND NOT the frame anchor used elsewhere: the probe is a
+         child of <body>, outside the app frame, so no frame-anchored gate can
+         reach it. The gate keys off the contour layer this theme mounts, so with
+         the feature off nothing matches and the probe is left exactly as written.
+
+         WHAT IS NOT PROVEN HERE: the probe is matched through its inline style TEXT
+         (style*='--dsw-specific-sidebar-fill'), and that match is locked against
+         the preload source by test/titlebar-probe.test.js — a tripwire for the next
+         shell rewrite, not a render on a real Windows window. If the pattern ever
+         stops matching, the fallback is to report the opaque bg-base colour instead
+         (uniform strip, contour not visible through it), never a half-transparent
+         strip. */
+      html:has([data-endfield-contour]) body > span[style*='--dsw-specific-sidebar-fill'] {
+        background-color: transparent !important;
       }
       /* Optional bounded frost. No full-window blur, nested filters or animation. */
       body[data-endfield-glass] {

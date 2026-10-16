@@ -73,6 +73,17 @@ const hooks = [
     'contour: conversation column transparency'],
   ["[class*='_frame']:has(> [data-endfield-contour]) [class$='_rightbarCol']",
     'contour: right column transparency (0.2 rename of _detailsCol)'],
+  // issue #36 — three belts that were still painted over the sheet. Each hook is
+  // one rule in theme.css, so dropping a rule fails here instead of silently
+  // bringing the belt back.
+  ["[class*='_frame']:has(> [data-endfield-contour]) :is([data-phase='active'], [data-content-phase='active']) [class$='_composerSeat']",
+    'contour: composer seat belt cleared, active phases only'],
+  ["[class*='_frame']:has(> [data-endfield-contour]) [class$='_sidebarCol'] [class$='_fade']",
+    'contour: sidebar session-list bottom fade cleared'],
+  ["[class*='_frame']:has(> [data-endfield-contour])::before",
+    'contour: windows title-bar strip clear (page side)'],
+  ["html:has([data-endfield-contour]) body > span[style*='--dsw-specific-sidebar-fill']",
+    'contour: windows title-bar overlay probe clear (native side)'],
   // 0.2 moved the turn-status label from dsh-client-ui-conversation to
   // dsh-client-ui-chat and replaced its gradient text with a masked sweep, so the
   // recolour now rides these two tokens instead of a class selector.
