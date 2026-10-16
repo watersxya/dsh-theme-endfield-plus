@@ -17,10 +17,11 @@ const problems = []
 const checked = []
 
 /* One subpath can name its file directly, or name one per resolution condition
-   (`{"import": "./index.mjs", "require": "./index.js"}` — the host half needs both
-   spellings, see docs/engineering-notes.md). Flatten to the string leaves so every
-   one is stat'ed: a condition pointing at a file that is not shipped is precisely
-   the "installs but never loads" failure this gate exists for. */
+   (`{"import": "./x.mjs", "require": "./x.js"}` — a dual entry exposes both
+   spellings). Flatten to the string leaves so every one is stat'ed: a condition
+   pointing at a file that is not shipped is precisely the "installs but never
+   loads" failure this gate exists for. The current package has no conditional
+   exports left (the host half is plain CJS), but the flattening stays general. */
 const exportTargets = (value) => {
   if (typeof value === 'string') return [value]
   if (value && typeof value === 'object') return Object.values(value).flatMap(exportTargets)

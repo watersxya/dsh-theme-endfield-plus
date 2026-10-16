@@ -148,17 +148,18 @@ pass('settings panel rendered without throwing')
 
 const nodes = walk(tree)
 const buttons = nodes.filter((n) => n.type === 'button')
-/* The rows live inside four group containers (主题 / 背景 / 动画 / 娱乐), so "all
-   rows" means every div whose key is one of the sixteen switch rows, wherever
-   it sits in the tree.
+/* The rows live inside five group containers (主题 / 背景 / 动画 / 娱乐 / 音频), so
+   "all rows" means every div whose key is one of the thirty-four setting rows,
+   wherever it sits in the tree.
 
    ROW_KEYS is BOTH the expected set and the counter, so a new row that is not
    listed here is silently ignored rather than counted — which is exactly what
    happened when 大字入场动画 was added (the count stayed at 9 and the assertion
    passed while a tenth row was on screen). The independent total below is what
    makes that impossible now. */
-/* The row set is the union of both lines of work: main's glass / contour-trail /
-   contour-renderer rows (16) plus this branch's 11 audio rows. The count is
+/* The row set is the union of several lines of work: the theme / background /
+   animation / thunder rows, the balance-capsule cluster (position, sidebar and
+   pointer auto-hide, credit readout) and the 11 audio rows. The count is
    asserted below against the rendered tree as well, so a row that exists in the
    page but not in this list still fails. */
 const ROW_KEYS = ['theme', 'palette', 'glass', 'radius', 'contour', 'contour-anim', 'contour-trail', 'contour-renderer', 'contour-fps', 'contour-speed', 'contour-scroll-pause', 'scroll-anim', 'scroll-anim-level', 'watermark', 'watermark-persist', 'loader', 'thunder', 'thunder-anim', 'balance-capsule', 'balance-capsule-position', 'balance-capsule-sidebar-hide', 'balance-capsule-hover-hide', 'credit-display', 'audio', 'audio-boot', 'audio-start', 'audio-done', 'audio-volume', 'audio-attention', 'audio-fail', 'audio-source', 'audio-dir', 'audio-human', 'audio-diag']

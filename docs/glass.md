@@ -12,8 +12,8 @@ The composer card deliberately keeps no `backdrop-filter`: a backdrop filter
 descendants. The send-button tooltip is fixed-positioned from viewport
 coordinates, so blurring the card resolved the tooltip's coords against the
 shrunk card box — clipping it past the card's right edge and making its
-ResizeObserver re-measure in a loop (visible layout jitter). Reported in
-issue #19; keeping the opaque tint preserves the glass look at none of the cost.
+ResizeObserver re-measure in a loop (visible layout jitter). Keeping the opaque
+tint preserves the glass look at none of the cost.
 
 Unsupported backdrop filters use a .96 opaque fill; reduced-transparency uses
 an opaque fill and removes blur. Disabling the theme removes the material

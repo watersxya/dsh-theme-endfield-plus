@@ -53,7 +53,7 @@
 
 关键差异，逐条都有对应的防护：
 
-- **只有 `.volatile()` 字段可编辑。** `ctx.settings` 只把 volatile 路径投影成表单，写非 volatile 路径会直接报 `Config field "x" is not volatile`；整份 schema 一个 volatile 字段都没有时该条目**根本不出现**在设置里。所以 `index.js` 的 `Config` **31 个字段全部 `.volatile()`**，`test/settings-config-forms.test.js` 会逐字段断言这一点（漏一个就是「设置保存不了」的现代写法）。
+- **只有 `.volatile()` 字段可编辑。** `ctx.settings` 只把 volatile 路径投影成表单，写非 volatile 路径会直接报 `Config field "x" is not volatile`；整份 schema 一个 volatile 字段都没有时该条目**根本不出现**在设置里。所以 `index.js` 的 `Config` **34 个字段全部 `.volatile()`**，`test/settings-config-forms.test.js` 会逐字段断言这一点（漏一个就是「设置保存不了」的现代写法）。
 - **两个 schemastery 必须区分。** DSH 同时装了带 `.volatile()` 的 `@deepseek-ai/schemastery`（3.18.4）和不带它的旧 `schemastery`（3.18.0）。`index.js` 的 `loadSchemastery(true)` 会逐个候选检查 `.volatile` 是否真的存在，找不到就返回 `undefined`（本插件退化成无需配置，而不是挂一个假表单）。
 - **命名空间是 entry id，不是包名。** `theme-endfield` 这个串同时出现在 `cordis.patch.yml` 的 `id:`、`index.js` 的 `SETTINGS_ENTRY` 和 client 的 `PREFS_ENTRY`；三者由新测试交叉校验。client 另外会依次尝试 `include:` 前缀等几种安装别名，优先选真正被 Host served（`status:'ready'`）的那个拼写；一个都没 served 时先绑定首选拼写（表单只是共享镜像的懒视图，早绑定才能等到迟到的 section）。此后每次镜像重载都会让每个表单重新派生，`unavailable`→`ready` 的转变会把「另一个拼写被 served」通知过来，此时自动切过去；万一镜像只更新却不通知（表单快照存储丢弃等价快照），还有**有界 settle watch**（20 × 500ms）自己轮询兜底。两种情况下切换期间 held 的编辑都会补写到新拼写上。
 - **`settings.yaml` 已废弃。** DSH 启动时把已有的 `settings.yaml` 改名为 `settings.yaml.imported`，并只迁移 `LEGACY_SECTION_ENTRIES` 里那几段。旧的主题段落名 `dsh-theme-endfield` 不等于 entry id `theme-endfield`，因此**不在迁移之列**，需要用户在设置页重设一次；这是 DSH 侧的行为，不是本插件丢的。旧值仍留在 `settings.yaml.imported` 里可手工对照。
@@ -63,7 +63,7 @@
 
 1. **声明**（Host `index.js`）：0.1.7-rc.1 导出 `Config`（`z.object({ 每个字段: z.string().default(...).volatile() })`）；同时用 `ctx.inject(['settings'], sctx => sctx.effect(() => sctx.settings.configure({ auto: false }, ctx.fiber)))` 关掉自动生成的设置页（本插件自带四组页面）。旧宿主则在 `settings.register` 存在时执行 `register('dsh-theme-endfield', schema, { applies:'live' })`。schema 每个字段都是**字符串**字段并带 `.default(...)`：default-ON 存 `'1'`（读作 `!== '0'`），default-OFF 存 `'0'`（读作 `=== '1'`）；palette/radius/fps/speed 各存一个文档里写明的字面量。字符串化让三代存盘点位的值模型完全一致，client 的键表、面板与测试都不必随 transport 改动。
 2. **写**（浏览器 `client.js`）：设置面板每个 toggle 调用内部 `prefsSet(field, value)` → 只有当快照是 **durably served**（`mode:'host' && status:'ready' && writable`）时才调用 transport 的 `set(field, value)`，Host 收到后原子写盘。只凭 `writable` 判写是一个坑：host 模式的快照即便本命名空间**尚未被 served** 也会返回 `writable:true` 与 `status:'unavailable'`（`commit radius = round … status= unavailable` 就是这么打出来的）——旧代码照写不误、清了脏标记但什么都没落盘，刷新即丢。现在这种写被**拦下并标脏**（页面内仍生效），等快照在后续 ready 回相（Host 文档提交、镜像重载）时由 subscription 自动补写；`configForms.set()` 明确返回 `false`（Host 拒绝/跳过）时同样重新标脏等待下次回相，而不是假装写成功。
-3. **读 / 生效**：transport 的 `getSnapshot().value` 就是已由 schema 校验并合并默认值的整段（client 再经 `prefsResolveSection()` 归一化到 31 个声明字段）；主题层的 `isEnabled()` 与其它 getter 每次调用都 `prefsGet(field)` 现读本段，天然随值变化。
+3. **读 / 生效**：transport 的 `getSnapshot().value` 就是已由 schema 校验并合并默认值的整段（client 再经 `prefsResolveSection()` 归一化到 34 个声明字段）；主题层的 `isEnabled()` 与其它 getter 每次调用都 `prefsGet(field)` 现读本段，天然随值变化。
 4. **订阅同步**：`form.subscribe(...)` / `scope.subscribe(...)` 在每次落盘/镜像变化时唤醒，client 再跑一遍 `reconcileFromPrefs()`，把主题开关（enabled → mount/unmount token+样式表）、圆角/配色 class、水印、等高线、雷霆大字重新对齐。这样同 profile 里**另一个窗口/设备**编辑落盘文件（或本轮写入被 Host 回相确认）都不需要刷新即可热生效。订阅返回的 disposer 现在会被保存并在 run 拆除时调用：`ConfigForm` 是 provider 拥有、跨插件共享的实例，漏掉它会把这一个监听器泄漏给同页面的下一次 run。
 5. **启动恢复**：`apply()` 早于 transport 就绪时，读 schema 默认值（内存镜像），一旦 `status:'ready'` 的第一个真值镜像到达就切换到持久值——即使 Desktop 在随机端口上启动，也能立刻恢复到上次的设置。
 
@@ -101,7 +101,7 @@ v1.1.4 之前的判据是「**必须**找到带 `.volatile()` 的 schemastery，
 - **判据写进自检报告**：新增 `schemaMode` 记录走了哪条路；`resolution` 每一行现在除 `resolved` / `error` 外还带 `loaded` / `loadError` / `volatile` / `marker`。「解析得到但加载失败」以前在报告里读起来像自相矛盾，现在是一行结论。
 - **不再有「默认跳过」的断言。** `settings-config-forms.test.js` 的 Host 侧断言在拿不到 schemastery 时**整段跳过**，而拿不到 schemastery 恰恰是它要守的那个场景——于是在唯一要紧的环境里它什么都没验。新的 `settings-config-fallback.test.js` 不依赖本机 schemastery：它把**显式 builder**（含「只有 `.extra()`」这一形状）交给 `buildSchemaWith()`，逐字段断言默认值与 `meta.volatile`，并断言选择顺序（native 优先、`.extra()` 兜底、两者皆无则不导出）。
 
-### 宿主入口为什么必须是 ESM：`require(esm)` 的启动竞态
+### 求值期 `require(esm)` 的启动竞态与负缓存
 
 v1.1.5 解决的是「副本没有 `.volatile()`」，这一段解决的是**同一句 `require` 本身会失败**——两者症状一模一样（`Config === undefined`、无表单、刷新复位），但成因完全不同，且后者在**全新启动、只装本插件**的 profile 上同样复现。
 
@@ -119,23 +119,13 @@ because it is not yet fully loaded.
 - **与第三方插件数量无关**：`dsh-base` / `dsh-web-app` 自己就 import cosmokit，所以把 profile 精简到只剩本插件也照样中招。缩减插件不是解法。
 - 与「dev-link 解析不到」也无关：那条路径下 `require.resolve` 会失败并留下 `error: MODULE_NOT_FOUND`；这里是**解析得到、require 抛错**。
 
-**为什么不能留在 CJS 里修。** `require()` 没有等待能力——必须在模块求值期同步拿到 builder（见上文 `Entry._init` 那条），而 cosmokit 的 job 还在飞就无法等待。ESM 加载器则**会排队**：同一句 `import` 会等 cosmokit 结束。
+**为什么没有留在 CJS 里彻底修掉。** `require()` 没有等待能力——必须在模块求值期同步拿到 builder（见上文 `Entry._init` 那条），而 cosmokit 的 job 还在飞就无法等待；ESM 加载器**会排队**（同一句 `import` 会等 cosmokit 结束），所以 v1.1.x 曾给包加一个手写的 ESM 入口 `index.mjs`：`warmSchemastery()` 先经 ESM 加载器预热 schemastery（`@deepseek-ai/schemastery`，失败退到无 scope 的 `schemastery`，再失败就静默放行），再 `await import('./index.js')` 并原样转出，`index.js` 一行逻辑都不用改。那个入口后来被移除了：`d5efc4c` 起包回到单一 CJS 入口，`main` 与 `exports["."]` 都直接指向 `index.js`，`index.mjs` 也从 `files` 白名单里拿掉（那次提交只解除引用，文件本体仍留在工作树里，之后才被单独删除）。
 
-**做法。** 给包加一个 ESM 入口 `index.mjs`，`package.json` 的 `main` 指向它，`exports["."]` 写成条件导出：
-
-| 条件 | 文件 | 谁走这条路 |
-| --- | --- | --- |
-| `import` | `index.mjs` | DSH 的 loader（Node 内部 ESM loader）、`--dump-config-schema`、dshmarket 的热挂载 |
-| `require` | `index.js` | 测试、以及任何直接 `require` 本包的消费者 |
-
-`index.mjs` 只做两件事：先经 ESM 加载器预热 schemastery（`@deepseek-ai/schemastery`，失败退到无 scope 的 `schemastery`，再失败就静默放行），再 `await import('./index.js')` 并原样转出。**`index.js` 一行逻辑都不用改**：它的扫描此时必然成功，自检报告也不会再写。两个约束写死在实现里：
-
-- **必须带 `default` 导出**：cordis 的 `unwrapExports()` 是 `exports.default ?? exports`，DSH 挂载的是 `default`，`Config` 必须挂在它上面。
-- **预热必须 best-effort**：宿主上一份 schemastery 都没有时要照旧降级成文档里的 no-op（由 `index.js` 报告），不能连 entry 都加载不了。
+因此**求值期这道竞态并没有被消除，只是被接受**：极少数启动里 `Config` 仍是 `undefined`（无表单、刷新复位），靠下面的负缓存修复把损失限制在单次求值内，靠整进程重启恢复。只有当将来又必须在求值期拿到 builder、而 DSH 的挂载顺序对这道竞态零容忍时，才需要重新评估加回 ESM 入口。
 
 **同一分支顺带修掉的第二个缺陷：负缓存。** `SCHEMA_SCAN_CACHE` 是进程级、以 registry Symbol 为键、**永不失效**，而且连失败结果也缓存。于是一次竞态失败被永久记成「本进程没有 schemastery」：插件重新挂载（模块重新求值）也救不回来——这正是「重启后的热挂载同样 `absent`」的原因。现在只有**可用**的扫描结果才入缓存（`cacheableScan`），`take()` 也拒收建不出 schema 的半求值模块（`exports` 还是 `{}` 时是 truthy，否则会被当成候选记下来）。实测：竞态后同进程重新求值仍失败 → 改为「可用才缓存」后，重新求值即可自愈。
 
-**验证（真实启动内的对照）。** 同一次 `dsh web` 启动里同时观察两条路径：
+**验证（真实启动内的对照）。** 同一次 `dsh web` 启动里同时观察三种取用方式，这是记录当时现象的证据，不是当前入口形态的描述（当前包只有 `index.js` 一个入口）：
 
 | 探针动作 | 结果 |
 | --- | --- |
@@ -143,7 +133,7 @@ because it is not yet fully loaded.
 | `import('@deepseek-ai/schemastery')`（ESM） | ✅ 成功，`.volatile()` 可用 |
 | 预热**之后**再 `require` 本插件 `index.js` | ✅ `Config` 建出（`nativeMarker: true`） |
 
-`test/host-esm-entry.test.js` 把入口的转出面（`default` 上的 `Config`/`apply`/`name`）与「没有 schemastery 时仍能加载」的降级路径固化成断言；真正的竞态只能在真实宿主启动里观察，所以那段对照留在本节作为判据。
+那段对照只能在真实宿主启动里观察到，所以留在这里作为判据；当时用它固化入口行为的 `test/host-esm-entry.test.js` 已随 `index.mjs` 一起删除。
 
 ### DSH 0.2.0-rc.2 上失效的三处应用侧钩子（v1.1.6 已跟进）
 

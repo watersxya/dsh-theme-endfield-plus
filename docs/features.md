@@ -8,7 +8,7 @@
 
 历史内存风格：这些开关最初存浏览器 `localStorage`。由于浏览器存储按「协议 + 主机 + 端口」的 origin 隔离，而 DSH Desktop 每次启动都在 127.0.0.1 绑定一个**随机临时端口**，端口一变 origin 就变，上次保存的设置永远读不到，表现为「重启后恢复默认」。已改用 DSH 官方的用户设置命名空间：
 
-- **DSH 0.2.0-rc.2 / 0.1.7-rc.1 及以后（当前）**：**Host 端（index.js）** 导出 schemastery `Config`，31 个字段全部 `.volatile()`——这两代都只把 volatile 字段投影成可编辑表单；命名空间就是本插件在 `cordis.patch.yml` 里那一行的 profile entry id（`theme-endfield`）。**浏览器端（client.js）** 用 `ctx.configForms.get('theme-endfield')` 读/写/订阅，值由 DSH 的设置服务写进 profile patch `<profile>/cordis.patch.yml`。另外 Host 会调用 `ctx.settings.configure({ auto: false }, ctx.fiber)` 告诉 DSH 本插件自带设置页，不要再自动生成一份。0.2 的这套接缝与 0.1.7 完全相同，本插件侧不需要改动；0.2 真正改掉的是三个**应用侧**细节（回合状态标签的类名与着色机制、右侧栏列名、插件卡片文案来源），见 [engineering-notes.md § DSH 0.2.0-rc.2](engineering-notes.md#dsh-020-rc2-上失效的三处应用侧钩子v116-已跟进)。
+- **DSH 0.2.0-rc.2 / 0.1.7-rc.1 及以后（当前）**：**Host 端（index.js）** 导出 schemastery `Config`，34 个字段全部 `.volatile()`——这两代都只把 volatile 字段投影成可编辑表单；命名空间就是本插件在 `cordis.patch.yml` 里那一行的 profile entry id（`theme-endfield`）。**浏览器端（client.js）** 用 `ctx.configForms.get('theme-endfield')` 读/写/订阅，值由 DSH 的设置服务写进 profile patch `<profile>/cordis.patch.yml`。另外 Host 会调用 `ctx.settings.configure({ auto: false }, ctx.fiber)` 告诉 DSH 本插件自带设置页，不要再自动生成一份。0.2 的这套接缝与 0.1.7 完全相同，本插件侧不需要改动；0.2 真正改掉的是三个**应用侧**细节（回合状态标签的类名与着色机制、右侧栏列名、插件卡片文案来源），见 [engineering-notes.md § DSH 0.2.0-rc.2](engineering-notes.md#dsh-020-rc2-上失效的三处应用侧钩子v116-已跟进)。
 - **≤ 0.1.5-rc.2（旧宿主，仍兼容）**：Host 通过 `ctx.settings.register('dsh-theme-endfield', schema)` 声明命名空间，由 `@deepseek-ai/dsh-settings-file` 落到 `<dshHome>/settings.yaml`；浏览器端用 `ctx.settingsScope` 的 `bind({ namespace, decode })` 读写。client 在找不到 `configForms` 时自动回落到这条路径。
 
 两代的落盘位置都由 DSH 决定（`$DSH_HOME` 或 `~/.dsh/...`），与浏览器 origin/端口无关，因此在 **dsh web（浏览器、固定/默认端口）** 和 **DSH Desktop（随机临时端口）** 两种运行方式下设置都能正确持久化——它们跑的都是 127.0.0.1 loopback 页面，DSH 会把连接解析为 `host` 持久化模式。
@@ -42,8 +42,10 @@
 | 04 娱乐 | 雷霆大字 | 关 | `thunder` |
 | | 大字入场动画 | 关 | `thunderAnim` |
 | | 顶部余额胶囊 | 关 | `balanceCapsule` |
-
-开启后默认显示 DeepSeek API 钱包余额与峰谷时段；会话使用 dsh-codearts-auth 渠道模型时自动切换为该渠道的剩余额度与积分消耗（详见「04 娱乐 › 顶部余额胶囊 › 渠道额度模式」）。
+| | 渠道额度读数 | 剩余 | `creditDisplay` |
+| | 胶囊位置 | 顶部居中 | `balanceCapsulePosition` |
+| | 侧栏自动隐藏 | 关 | `balanceCapsuleSidebarHide` |
+| | 靠近自动隐藏 | 开 | `balanceCapsuleHoverHide` |
 | 05 音频 | 音频通知 | **关** | `audioEnabled` |
 | | 启动加载动画音 | 开 | `audioBoot` |
 | | 任务开始音 | 开 | `audioTurnStart` |
@@ -55,6 +57,8 @@
 | | 开始音仅认会话框 | 开 | `audioHumanOnly` |
 | | 自定义音效目录 | （空） | `audioSoundDir` |
 | | 诊断日志 | 关 | `audioDiag` |
+
+开启后默认显示 DeepSeek API 钱包余额与峰谷时段；会话使用 dsh-codearts-auth 渠道模型时自动切换为该渠道的剩余额度与积分消耗（详见「04 娱乐 › 顶部余额胶囊 › 渠道额度模式」）。
 
 取值约定（与 localStorage 时代的极性完全一致，现在由 schema 默认值保证）：**默认开启**的开关在该 schema 里默认存 `'1'`，客户端读作 `!== '0'`；**默认关闭**的存 `'0'`，读作 `=== '1'`。回滚/清除字段时客户端回到 schema 默认值；异常存储值被 schema 校验拒绝，不会悄悄改变出厂观感。
 
@@ -240,8 +244,7 @@
 当当前会话使用的模型来自 [dsh-codearts-auth](https://www.npmjs.com/package/dsh-codearts-auth)（Jet Hub）的某个渠道（CodeArts、CodeBuddy、WorkBuddy、LobsterAI、Qoder、Qoder CN、TRAE、Cline、Loomy、Raccoon、MiniMax、ZCode、OpenCode）时，胶囊自动切换为**渠道额度**显示，随切换渠道实时跟随：
 
 - **显示内容**：`渠道名 剩余额度 单位`——渠道名（如 `TRAE`）小字在前，剩余量沿用插件自己的格式（credit 非整数保留两位小数；token 量纲显示 `12.35K` / `12.35M`），单位尾注 `积分` 或 `Token`。多账号取第一个可用账号的 active 额度包求和。
-- **右侧读数可选已用或剩余**：设置面板「04 娱乐 › 渠道额度读数」可切换右侧百分比的含义——**已用**（默认，`已用xx%` = 已用/总额度，与插件徽章一致）或**剩余**（`剩余xx%` = 剩余/总额度）。右侧圆环与百分比**始终同步**：选「已用」圆环走已用份额，选「剩余」圆环走剩余份额。两种读法都需渠道报出总额度，否则右侧留空、圆环归零——没有总额度的份额无从判断，不编造读数。左侧主数字始终为剩余额度，不受此设置影响。切换在下次取数时生效（不强制额外 RPC，5 分钟取数下限保持诚实）。
-- **右侧进度条显示积分消耗**：圆环时钟与百分比槽位改为 `已用xx%`——`Σ已用 / Σ总额度`，与左侧数字同源同账号。没有总额度信息时百分比留空、圆环归零，不编造读数。
+- **右侧读数可选已用或剩余**：设置面板「04 娱乐 › 渠道额度读数」可切换右侧百分比的含义——**已用**（`已用xx%` = 已用/总额度，与插件徽章一致）或**剩余**（默认，`剩余xx%` = 剩余/总额度）。右侧圆环与百分比**始终同步**：选「已用」圆环走已用份额，选「剩余」圆环走剩余份额。两种读法都需渠道报出总额度，否则右侧留空、圆环归零——没有总额度的份额无从判断，不编造读数。左侧主数字始终为剩余额度，不受此设置影响。切换在下次取数时生效（不强制额外 RPC，5 分钟取数下限保持诚实）。
 - **不显示峰谷时段**：高峰/低谷是 DeepSeek API 的计费概念，渠道模式下整段时段读数隐藏。
 - **取数与缓存**：走插件自己的管理 RPC（`usage.badge`），复用宿主侧 120s TTL 缓存（失败缓存 15s）；主题侧另有**每渠道 5 分钟的取数下限**——余额是慢变量，胶囊是一眼可读的快照，不值得更密的请求。渠道**切换**绕过下限立即跟随；取数失败 30 秒后即允许重试。同一 `--endfield-balance-sweep` 变量在两种模式间切换含义，模式切换零重排。
 - **失败语义**：渠道未登录、插件缺失或上游失败显示 `--`，绝不变灰成 0；切回 DeepSeek 模型则恢复钱包余额显示（DeepSeek 钱包轮询始终在跑，切回即刻有数）。

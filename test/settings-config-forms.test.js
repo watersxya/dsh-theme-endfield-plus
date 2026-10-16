@@ -597,7 +597,7 @@ async function main() {
   /* =======================================================================
      11. REGRESSION (the reported bug) — "刷新后设置就重置了".
 
-         The panel seeds all sixteen `useState` hooks from prefsGet() during its
+         The panel seeds every `useState` hook from prefsGet() during its
          FIRST render. That render happens while the Host is still sending the
          section, so every read falls back to the schema default. Nothing
          re-synced those hooks when the section arrived: the theme's own surfaces

@@ -251,19 +251,18 @@ node test/settings-config-fallback.test.js # Host Config 字段契约与选择�
 node test/settings-namespace.test.js # 存储字段名对齐 schema + 旧拼写迁移 + 三条读/写边界
 node test/settings-off.test.js      # 关闭主题后设置页仍可读
 node test/settings-locale.test.js   # 跟随语言设置（zh/en 词典对齐 + 切换生效）
-node test/host-esm-entry.test.js    # ESM 宿主入口：default 上的转出面 + 无 schemastery 时仍能加载
 ```
 
 **`settings-rows.test.js`** 不用浏览器也不用 React：以**记录型 `React` / `slots` + 假的设置 transport**（`test/fixtures/settings-scope.js`）在进程内跑一次真实 `apply()`，抓下设置面板真正的元素树。设置页是用户唯一能碰到这些开关的入口，而那里的错误（抛异常、漏 key、开关写错了 DSH 设置的字段）check.js 与画布测试都看不见。
 
-> 说明：这个插件从 **`localStorage` 迁移到了 DSH 的持久化设置服务**（见 features.md / engineering-notes.md）。因此设置类测试不再往浏览器存储里塞值，而是驱动假的 transport：除 `settings-config-forms.test.js` 之外的用例走旧世代 `ctx.settingsScope`（fixture 的 `settingsScopeStub`，在内存里扮演 `<settings.yaml>` 的命名字段节），新世代由 `configFormsStub` 扮演 `ctx.configForms`（命名空间 = profile entry id）。断言 31 行齐全且归入 5 个分组容器、key 唯一、分组标题（01 主题 / 02 背景 / 03 动画 / 04 娱乐 / 05 音频）与配色样式规则都在、配色行默认显示谷地黄且按钮提供「切换武陵青」、点击把 `palette` 写成 `wuling`、存了 `wuling` 时反向提供「切换谷地黄」并标注 `#14d0d0`、图层关闭时子开关为 disabled、开启后恢复可用，雷霆大字与大字入场动画均默认为关、说明文字包含「任务开始」/「任务完成」与 3 秒、**子开关只写自己的字段而不误写主开关的**，以及点击确实写入文档里那个 DSH 设置字段。
+> 说明：这个插件从 **`localStorage` 迁移到了 DSH 的持久化设置服务**（见 features.md / engineering-notes.md）。因此设置类测试不再往浏览器存储里塞值，而是驱动假的 transport：除 `settings-config-forms.test.js` 之外的用例走旧世代 `ctx.settingsScope`（fixture 的 `settingsScopeStub`，在内存里扮演 `<settings.yaml>` 的命名字段节），新世代由 `configFormsStub` 扮演 `ctx.configForms`（命名空间 = profile entry id）。断言 34 行齐全且归入 5 个分组容器、key 唯一、分组标题（01 主题 / 02 背景 / 03 动画 / 04 娱乐 / 05 音频）与配色样式规则都在、配色行默认显示谷地黄且按钮提供「切换武陵青」、点击把 `palette` 写成 `wuling`、存了 `wuling` 时反向提供「切换谷地黄」并标注 `#14d0d0`、图层关闭时子开关为 disabled、开启后恢复可用，雷霆大字与大字入场动画均默认为关、说明文字包含「任务开始」/「任务完成」与 3 秒、**子开关只写自己的字段而不误写主开关的**，以及点击确实写入文档里那个 DSH 设置字段。
 
 **`settings-durable-hold.test.js`**（旧世代 `settingsScope` 路径；0.1.7 上同一份写入 gate / 补写契约由 `settings-config-forms.test.js` 覆盖）用**两阶段假 `ctx.settingsScope`** 复现那条历史告警：宿主半部 `ctx.settings.register(...)` 尚未跑、命名空间还没进 Host 的 served 列表前，scope 快照是 `{ status:'unavailable', writable:true, mode:'host' }`——单看 `writable` 会照写不误却落不到盘。它先在未就绪态切「圆角 / 武陵青」，断言**没有任何 `scope.set` 出线**（旧 bug 会打 `commit … status= unavailable` 并静默丢脏）；随后模拟文档 committed、命名空间进入 served 列表、快照翻为 `status:'ready'`，断言订阅路径把两份 held 编辑**自动补写**进文档，且不会重复写两遍（replay 有 re-entrancy 护栏）。
 
 **`settings-config-forms.test.js`** 守的是 0.1.7-rc.1 换掉整套 settings API 之后最容易「看起来正常、其实没保存」的几处：它用假 `configForms` 服务（fixture 的 `configFormsStub`，只有被 `serve()` 过的命名空间才报 `status:'ready'`）驱动真实 client，断言
 
 - **两半的 entry id 一致**：`client.js` 的 `PREFS_ENTRY` == `index.js` 的 `SETTINGS_ENTRY` == `cordis.patch.yml` 里那一行的 `id`（命名空间是 entry id，任一处对不上就全程读不到）；
-- **Host `Config` 真的可编辑**：31 个字段齐全、无多余字段、**每个字段都带 `.volatile()`** 且默认值等于 `FIELD_DEFAULTS`——漏一个 volatile 就是 0.1.7 版的「设置保存不了」（该断言在拿不到 schemastery 的环境里自动跳过，CI 无 DSH 时不会误报——**也正因为会跳过，它没能在唯一要紧的环境里发现问题**：本机 web profile 恰好就是「拿不到可用的 schemastery」这台机器，于是这一整段断言空跑，`Config` 缺失一路绿灯。字段契约与选择顺序现由 `settings-config-fallback.test.js` 无条件断言）；
+- **Host `Config` 真的可编辑**：34 个字段齐全、无多余字段、**每个字段都带 `.volatile()`** 且默认值等于 `FIELD_DEFAULTS`——漏一个 volatile 就是 0.1.7 版的「设置保存不了」（该断言在拿不到 schemastery 的环境里自动跳过，CI 无 DSH 时不会误报——**也正因为会跳过，它没能在唯一要紧的环境里发现问题**：本机 web profile 恰好就是「拿不到可用的 schemastery」这台机器，于是这一整段断言空跑，`Config` 缺失一路绿灯。字段契约与选择顺序现由 `settings-config-fallback.test.js` 无条件断言）；
 - **被 served 的表单会被绑定并采纳**（存档里的 `palette: wuling` 直接落到 `<body>` 的 class）；
 - **entry id 是探测出来的**：只 served `include:theme-endfield` 时写入也落在那个拼写上；
 - **拒写与未就绪都算 held**：`set()` 解析为 `false`、或命名空间尚未 served 时，编辑不改变文档、也不假装保存；一旦拒写解除（下一次快照）或命名空间进入 served，held 编辑被自动补写；

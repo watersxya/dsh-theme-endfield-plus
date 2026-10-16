@@ -8,8 +8,7 @@
 
 | 文件 | 是否进入发布产物 | 运行时会加载吗 |
 | --- | --- | --- |
-| `index.mjs`（宿主半的 ESM 入口） | 是 | 是（loader 通过它加载宿主半；见 `docs/engineering-notes.md` 的「宿主入口为什么必须是 ESM」） |
-| `index.js`（宿主半） | 是 | 是（由 `index.mjs` 动态 `import`，也可能被直接 `require`，例如测试） |
+| `index.js`（宿主半） | 是 | 是（loader 直接 `require` 的包入口，`main` 与 `exports["."]` 都指向它） |
 | `client.js`（Web 半） | 是 | 是 |
 | `lib/`（宿主侧通知引擎：`audio.js` / `tone.js` / `slots.js`） | 是 | 是（`index.js` 顶层 `require('./lib/audio.js')`） |
 | `sounds/`（5 个 `.wav` 提示音） | 是 | 是（作为数据由 `lib/audio.js` 读取、拷贝到缓存目录后交给播放器） |
@@ -18,9 +17,9 @@
 | `README.md` / `docs/` / `LICENSE` | 是 | 否（纯文档） |
 | `check.js` / `selftest.js` / `test/` / `.github/` | **否** | **否** |
 
-发布产物由 `package.json` 的 `files` 字段定义（`index.mjs, index.js, client.js, cordis.patch.yml,
-locale, README.md, docs, lib, sounds, LICENSE`，外加 npm 始终包含的 `package.json`）。五个运行时
-入口（`index.mjs`、`index.js`、`client.js`、`lib/`、`cordis.patch.yml`）对 `check.js`、`selftest.js`、
+发布产物由 `package.json` 的 `files` 字段定义（`index.js, client.js, cordis.patch.yml,
+locale, README.md, docs, lib, sounds, LICENSE`，外加 npm 始终包含的 `package.json`）。四个运行时
+入口（`index.js`、`client.js`、`lib/`、`cordis.patch.yml`）对 `check.js`、`selftest.js`、
 `test/` **零引用**：它们只能由 `npm run check` / `npm run selftest` / `npm test` 显式启动。
 本文件本身是仓库文档，不进发布产物。
 
@@ -32,18 +31,22 @@ locale, README.md, docs, lib, sounds, LICENSE`，外加 npm 始终包含的 `pac
 
 签名扫描只会报"长得像危险"的字符串，下面三处才是需要判断的**实际权限**：
 
-1. **派生子进程放声**（`lib/audio.js:307-346`）。不直接用 `child_process`，而是取宿主的
+> **本小节的括号行号是写就时的定位，不随代码维护。** 产物由 `src/host/` 片段拼接生成，
+> 任何片段增删都会让行号整体平移；下一条只保证"这段代码在哪、干什么"，不保证行号永远准。
+> 需要当前行号时按函数名/路径在 `index.js`、`lib/` 里搜，或按第 5 节的命令重跑扫描。
+
+1. **派生子进程放声**（`lib/audio.js:271-364`，`playerCommands()` 到 `subprocess.spawn()`）。不直接用 `child_process`，而是取宿主的
    `subprocess` 服务、以固定 argv 表（`playerCommands`）派生系统播放器；Windows 分支走
    `powershell -EncodedCommand`，参数经 `''` 转义、无 shell 拼接。宿主没有该服务时只记
    note 并保持安静。**用户可在设置面板填一个自定义声音目录**（`audioSoundDir`），它会
    进入 `path.join` 并被扫描（只读 `.wav`）：这是"用户自己填的路径"，不是外部输入。
-2. **启动期的模块解析扫掠**（`index.js:202-268`、`389-396`）。为了在 dev-link 安装下找回
+2. **启动期的模块解析扫掠**（`index.js:213-279`、`400-431`）。为了在 dev-link 安装下找回
    宿主自己的 `schemastery`，`resolutionRoots()` 会枚举 cwd 及其祖先、每个 profile 的
    `node_modules`、`PATH` 前 40 项等，并对固定包名执行 `require.resolve` + `require`。
    也就是说：**任一被扫掠目录里放一个名为 `schemastery` / `@deepseek-ai/schemastery` 的
    包，其顶层代码会在宿主进程里执行**。这是有意的降级（找不到 `Config` 等于所有设置刷新
    即丢），但它是信任边界而不是误报，扫描器不会替你判断。
-3. **一条回环 HTTP 路由**（`index.js:846-944`，`/theme-endfield/audio`）。供设置页做试听
+3. **一条回环 HTTP 路由**（`index.js:966-1063`，`/theme-endfield/audio`）。供设置页做试听
    与诊断，`POST` 分支会以 `force: true` 绕过限速直接放声。该 handler **自身不做 Origin /
    会话校验**，依赖宿主 webServer 的鉴权与前缀归属；`readJson` 有 64 KB 截断但没有超时。
 
@@ -104,7 +107,7 @@ verdict = WARN   summary = { high: 0, medium: 2, low: 25 }
 | 位置 | 特征 | 为什么保留 | 风险边界 |
 | --- | --- | --- | --- |
 | `test/contour-cusps.test.js:64` | `new Function(...)`（`new_function` / `function_ctor`，high） | 把 `client.js` 里**抽取出来的**等高线几何代码放进内存里跑，源码就在同文件内可读，用来验证曲线拐点回归 | 编译并执行的是本仓库自己的源码；不联网、不写盘、无外部输入 |
-| `test/*.js`（12 个文件） | `execFileSync(chrome, [...])`（`exec_sync`，high） | 无头 Chrome 渲染截图 / 取 `--dump-dom`，做像素级视觉回归 | 参数以数组传入、**无 shell**、`shell:false`；被启动的是本机浏览器，参数全部是字面量或仓库内路径 |
+| `test/*.js`（19 个文件） | `execFileSync(chrome, [...])`（`exec_sync`，high） | 无头 Chrome 渲染截图 / 取 `--dump-dom`，做像素级视觉回归 | 参数以数组传入、**无 shell**、`shell:false`；被启动的是本机浏览器，参数全部是字面量或仓库内路径 |
 | `.github/scripts/*.js` | `execFileSync('git' / process.execPath, [...])`（`exec_sync`，high） | CI 里跑语法检查、`git diff --check`、测试套件 | 同上：数组参数、无 shell |
 | `selftest.js:44` | `vm.createContext` + `runInContext` | 在进程内、对着一个桩沙箱执行 `check.js` 自身，好让「守卫失效」这件事可被观测（而不是靠人眼） | 执行的是本仓库的 `check.js`；沙箱里只有 `console`/`process` 桩，无 `require` 之外的宿主能力 |
 
