@@ -50,7 +50,7 @@ dsh plugin --profile web rm dsh-theme-endfield
 
 | DSH | 设置持久化 | 备注 |
 | --- | --- | --- |
-| **0.2.x**（在 **0.2.0-rc.2** 上实测） | Host 导出 `Config`，浏览器 `ctx.configForms` | 当前支持目标 |
+| **0.2.x**（在 **0.2.0-rc.2** 与 **0.2.1-rc.2** 上实测） | Host 导出 `Config`，浏览器 `ctx.configForms` | 当前支持目标 |
 | 0.1.7 – 0.1.x | 同一套 Config／configForms 接缝 | 无需改动 |
 | ≤ 0.1.5 | `ctx.settings.register` + `ctx.settingsScope` | 自动回落，无需配置 |
 

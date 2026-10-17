@@ -40,7 +40,10 @@
 
        Both are loopback pages, so DSH resolves the connection to 'host' mode
        and the values land on disk; a change of port does not move them because
-       nothing lives in browser storage any more.
+       nothing lives in browser storage any more. (0.2.1-rc.2 removed the `mode`
+       field from the form snapshot entirely — writes then always ride
+       `remote.settings.mutate()` to the Host document, so "is this page
+       loopback?" is no longer a question that generation can answer or needs.)
 
        Value model. Namespace fields are the tails of the old localStorage keys
        and are stored as the same strings, so the semantics (and any older

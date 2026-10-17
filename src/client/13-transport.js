@@ -11,6 +11,12 @@
                       writable, mode }. set() returns Promise<boolean>: false
                       means the Host refused or SKIPPED the write (the classic
                       case being memory mode on a non-loopback page).
+                      0.2.1-rc.2 keeps this seam but DELETED `mode`: the
+                      snapshot is { status, value, base, user, revision,
+                      writable } and every accepted set() is a
+                      remote.settings.mutate() against the Host document.
+                      Treat a missing `mode` as durable; only an explicit
+                      mode:'memory' (0.1.7 on a non-loopback page) refuses.
          <=0.1.5-rc.2 binder = ctx.get('settingsScope') / ctx.settingsScope
                       binder.bind({ namespace, decode }) -> scope with the same
                       snapshot fields, and a fire-and-forget set().

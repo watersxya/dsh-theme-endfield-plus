@@ -226,8 +226,14 @@ function settingsScopeStub(initial = {}) {
  * @param options.accept    - (namespace, field, value) -> boolean. Return false
  *                            to model a REFUSED write: the returned promise
  *                            resolves false and the section does not change.
- * @param options.mode      - 'host' (default) or 'memory' (non-loopback page;
- *                            never persists).
+ * @param options.mode      - 'host' (default), 'memory' (non-loopback page;
+ *                            never persists), or 'none' — the DSH 0.2.1-rc.2
+ *                            snapshot shape, which carries NO `mode` key at all
+ *                            (that generation deleted both the field and the
+ *                            `persistence` concept it described). 'none' must
+ *                            still accept writes: it is what a real 0.2.1 page
+ *                            reports, so a gate keyed on mode:'host' would hold
+ *                            every edit forever.
  * @param options.writable  - false models a read-only Host document.
  * @param options.loading   - namespaces that report `status:'loading'` with
  *                            `writable:false` and NO value, modelling the real
@@ -249,6 +255,11 @@ function configFormsStub(initialSections = {}, options = {}) {
   // Namespaces still in flight: 'loading' now, ready once settle() is called.
   const loading = (options.loading || []).slice()
   const mode = options.mode || 'host'
+  /* 'none' models a 0.2.1-rc.2 form, whose snapshot has no `mode` key at all.
+     Spreading a helper keeps every snapshot site honest about that: the key is
+     simply absent, not set to undefined (JSON-cloned snapshots drop it either
+     way, but `'mode' in snap` must be false to catch a gate that reads it). */
+  const modeField = mode === 'none' ? {} : { mode }
   const writable = options.writable !== false
   // A mirror that answers without replacing any form's snapshot (models the
   // worst case the theme's bounded settle watch exists for).
@@ -276,10 +287,10 @@ function configFormsStub(initialSections = {}, options = {}) {
        false, no value — and a write issued here must NOT be treated as landed
        (prefsDurablyServed requires status 'ready'). */
     if (loading.indexOf(ns) >= 0) {
-      return { status: 'loading', value: undefined, base: undefined, user: undefined, revision: undefined, writable: false, mode }
+      return { status: 'loading', value: undefined, base: undefined, user: undefined, revision: undefined, writable: false, ...modeField }
     }
     if (served.indexOf(ns) < 0) {
-      return { status: 'unavailable', value: undefined, base: undefined, user: undefined, revision: undefined, writable, mode }
+      return { status: 'unavailable', value: undefined, base: undefined, user: undefined, revision: undefined, writable, ...modeField }
     }
     return {
       status: 'ready',
@@ -288,7 +299,7 @@ function configFormsStub(initialSections = {}, options = {}) {
       user: Object.assign({}, sectionOf(ns)),
       revision: 1,
       writable,
-      mode,
+      ...modeField,
     }
   }
   const formFor = (ns) => forms[ns] || (forms[ns] = {

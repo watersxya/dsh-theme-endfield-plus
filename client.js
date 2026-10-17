@@ -133,7 +133,10 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
 
        Both are loopback pages, so DSH resolves the connection to 'host' mode
        and the values land on disk; a change of port does not move them because
-       nothing lives in browser storage any more.
+       nothing lives in browser storage any more. (0.2.1-rc.2 removed the `mode`
+       field from the form snapshot entirely — writes then always ride
+       `remote.settings.mutate()` to the Host document, so "is this page
+       loopback?" is no longer a question that generation can answer or needs.)
 
        Value model. Namespace fields are the tails of the old localStorage keys
        and are stored as the same strings, so the semantics (and any older
@@ -554,6 +557,12 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
                       writable, mode }. set() returns Promise<boolean>: false
                       means the Host refused or SKIPPED the write (the classic
                       case being memory mode on a non-loopback page).
+                      0.2.1-rc.2 keeps this seam but DELETED `mode`: the
+                      snapshot is { status, value, base, user, revision,
+                      writable } and every accepted set() is a
+                      remote.settings.mutate() against the Host document.
+                      Treat a missing `mode` as durable; only an explicit
+                      mode:'memory' (0.1.7 on a non-loopback page) refuses.
          <=0.1.5-rc.2 binder = ctx.get('settingsScope') / ctx.settingsScope
                       binder.bind({ namespace, decode }) -> scope with the same
                       snapshot fields, and a fire-and-forget set().
@@ -732,10 +741,9 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
     const dbg = (...a) => { try { if (typeof console !== 'undefined' && console.warn) console.warn('[dsh-theme-endfield:prefs]', ...a) } catch (e) { /* noop */ } }
 
     /* --- Durable write gate -----------------------------------------------
-       A scope snapshot from @deepseek-ai/dsh-client-ui-settings carries three
-       flags that must ALL hold before a scope.set can durably land:
-         mode    === 'host'   loopback page syncing the Host document.
-                              'memory' (non-loopback) never persists.
+       A scope snapshot from @deepseek-ai/dsh-client-ui-settings carries the
+       flags below; the ones that must ALL hold before a scope.set can durably
+       land are:
          status  === 'ready'  the Host's describe view actually SERVES this
                               namespace and a decoded value stands. It stays
                               'loading' before the first accepted section and
@@ -746,6 +754,23 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
                               a 'loading'/'unavailable' host scope reaches no
                               durable store.
          writable=== true     the Host document accepts writes.
+         mode    === 'host'   OPTIONAL. Loopback page syncing the Host
+                              document; 'memory' (a non-loopback page) never
+                              persists. @deepseek-ai/dsh-client-ui-settings
+                              0.2.1-rc.2 DELETED this field (and the whole
+                              `persistence` concept) along with the CSS
+                              'memory' mode, so on that generation the
+                              snapshot is only { status, value, base, user,
+                              revision, writable } and a missing `mode` means
+                              "no persistence policy to consult": every
+                              write rides ctx.remote.settings.mutate() to the
+                              Host document. Only a snapshot that explicitly
+                              says mode:'memory' (0.1.7-rc.*, a non-loopback
+                              page) may refuse the write; `undefined` must be
+                              treated as durable, or a 0.2.1 page would hold
+                              every edit forever and log exactly the
+                              `mode= undefined` boot report this gate is
+                              meant to explain.
        Gating on snap.writable ALONE is the old bug: a host-mode describe view
        answers writable=true even while this namespace is still unserved, so the
        old code fired scope.set into a namespace the host had not registered,
@@ -759,7 +784,13 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       if (!scope) return null
       try { return scope.getSnapshot() } catch (e) { return null }
     }
-    const prefsDurablyServed = (snap) => !!snap && snap.mode === 'host' && snap.status === 'ready' && !!snap.writable
+    /* `mode` is a 0.1.7-only snapshot field (see the gate note above): it is
+       absent on 0.2.1-rc.2+, where absence means "always durable", and only an
+       explicit mode:'memory' still vetoes a write. */
+    const prefsDurablyServed = (snap) => !!snap
+      && (snap.mode === undefined || snap.mode === 'host')
+      && snap.status === 'ready'
+      && !!snap.writable
     /* One field write through the bound transport, with one settlement contract
        for both generations. The legacy scope.set() is fire-and-forget; a
        ConfigForm's set() returns Promise<boolean>, where false means the Host
@@ -1168,8 +1199,11 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
        it to guesswork. */
     const prefsReportBoot = () => {
       const snap = prefsSnapshotOf(prefsScope)
-      const healthy = snap !== null && snap.status === 'ready' && snap.mode === 'host'
-        && snap.writable === true && prefsDirty.size === 0
+      // Health is the same predicate the write gate uses — `mode` is absent on
+      // 0.2.1-rc.2+, so requiring mode:'host' here would print a boot report on
+      // a perfectly working page (that is exactly the `mode= undefined` line
+      // this report itself used to emit).
+      const healthy = prefsDurablyServed(snap) && prefsDirty.size === 0
       if (healthy) return
       dbg('boot report (preferences did NOT reach a durable section):',
         'boundNs=', prefsScopeNs, 'kind=', prefsScopeKind,

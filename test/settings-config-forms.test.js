@@ -453,6 +453,35 @@ async function main() {
   }
 
   /* =======================================================================
+     6b. DSH 0.2.1-rc.2 snapshot (NO `mode` key at all): the settings client
+         deleted both the field and the `persistence` concept it described, so
+         a ready + writable form is durable by definition and the edit MUST
+         reach the transport. Regression guard for the shipped bug where the
+         gate required mode:'host', held every edit for ~10s, then dropped it
+         (the live symptom: `boot report ... status= ready mode= undefined
+         writable= true` and switches that reset on reload).
+     ======================================================================= */
+  {
+    const stub = configFormsStub({}, { served: ['theme-endfield'], mode: 'none' })
+    const client = bootClient({ configForms: stub.service })
+    const snap = stub.service.get('theme-endfield').getSnapshot()
+    if (!('mode' in snap)) pass('0.2.1 fixture snapshot really carries no mode key')
+    else fail('fixture still exposes mode: ' + JSON.stringify(snap))
+    const radius = findButton(panelButtons(client), RADIUS_RE)
+    if (!radius) fail('no radius toggle button rendered (0.2.1 snapshot case)')
+    else {
+      radius.props.onClick()
+      client.flush()
+      await drain()
+      if (stub.writes.length >= 1 && stub.sectionOf('theme-endfield').radius === 'round') {
+        pass('0.2.1 snapshot (mode absent) wrote the edit through to the document')
+      } else {
+        fail('0.2.1 snapshot held the edit instead of writing it: writes=' + JSON.stringify(stub.writes))
+      }
+    }
+  }
+
+  /* =======================================================================
      7. Teardown releases the subscription of the shared, provider-owned form.
      ======================================================================= */
   {

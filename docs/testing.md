@@ -267,6 +267,7 @@ node test/settings-locale.test.js   # 跟随语言设置（zh/en 词典对齐 + 
 - **entry id 是探测出来的**：只 served `include:theme-endfield` 时写入也落在那个拼写上；
 - **拒写与未就绪都算 held**：`set()` 解析为 `false`、或命名空间尚未 served 时，编辑不改变文档、也不假装保存；一旦拒写解除（下一次快照）或命名空间进入 served，held 编辑被自动补写；
 - **memory 模式（非 loopback 页面）永不下盘**：一次写都不发生；
+- **0.2.1 快照（没有 `mode` 字段）必须照写**：fixture 的 `mode:'none'` 让快照里**不存在** `mode` 键（`'mode' in snap === false`，与 `@deepseek-ai/dsh-client-ui-settings` 0.2.1-rc.2 删除该字段后的真实形状一致），断言 ready + writable 的编辑直接写到文档。这是 v1.2.2 在 0.2.1 桌面「改了不保存」的回归护栏——旧闸门要求 `mode:'host'`，新版恒为 `undefined`，编辑只会 held 到有界重试超时；
 - **静默 ready**：命名空间开始被服务但镜像**完全不通知**任何表单时，有界 settle watch（20 × 500ms）会自己重新读取、采纳、切到被 served 的拼写并补写——这是旧世代 250 ms binder 轮询的等价安全网；
 - **退订**：run 拆除时调用 `form.subscribe()` 返回的 disposer（`ConfigForm` 是 provider 拥有、跨插件共享的实例，漏掉就是给下一次 run 泄漏监听器）。
 
