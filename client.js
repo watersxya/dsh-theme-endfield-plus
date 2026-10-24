@@ -10075,6 +10075,12 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
                than the one the initializers used. */
             const resyncPanelFromPrefs = () => {
               setEnabled(isEnabled())
+              /* LOCAL PATCH: the shutdown row. Without this line a flip from
+                 ANOTHER window updated the button correctly (the surface
+                 reconciler re-derives it) while this panel's own label stayed
+                 stuck until the next page load — every other row re-derives
+                 from the store here, the shutdown row used to be the exception. */
+              setShutdownButtonOn(isShutdownButtonOn())
               setWmOn(isWatermarkOn())
               setWmPersist(isWatermarkPersistOn())
               setLoaderOn(isLoaderOn())
