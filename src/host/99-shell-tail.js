@@ -33,5 +33,12 @@ module.exports = {
   hasVisibleText,
   installAudio,
   registerBalanceBridge,
+  /* System-bridge surface, asserted by test/system-bridge.test.js. The probe is
+     exported so the "can this surface even exit" contract can be pinned against
+     a real context rather than through the HTTP layer. */
+  registerSystemBridge,
+  resolveAppExit,
+  canShutdown,
+  SYSTEM_ROUTE,
   configPrefScope,
 };

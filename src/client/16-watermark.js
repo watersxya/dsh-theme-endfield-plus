@@ -278,6 +278,14 @@
        later is in its temporal dead zone during apply() — and `typeof` does NOT
        protect against a TDZ ReferenceError the way it does for an undeclared name. */
     let contourSyncHook = () => {}
+    /* LOCAL PATCH: background-image layers ride the same MutationObserver as the
+       contour sheet — the app frame is created during boot and replaced on some
+       route changes, so both layers must be able to (re)attach later. Declared
+       here as real mutable bindings for the same TDZ reason as the
+       contourSyncHook above, and assigned by src/client/17-bg-image.js, the
+       fragment that defines the reconcilers. */
+    let bgImageSyncHook = () => {}
+    let navBgImageSyncHook = () => {}
     /* Same seam for the output-scroll animator: it too has to attach to nodes the
        app renders asynchronously (the conversation scrollport), and the observer
        below is already the page's "something changed, re-attach" channel. Declared
@@ -300,6 +308,8 @@
         // fires on every DOM change on the page, including every streaming token,
         // so the hook's first act is an O(1) "still attached?" check.
         contourSyncHook()
+        bgImageSyncHook()
+        navBgImageSyncHook()
         scrollAnimSyncHook()
       })
       watermarkObserver.observe(document.body, { childList: true, subtree: true })
@@ -309,6 +319,8 @@
       if (watermarkObserver === null) return
       syncWatermarkVisibility()
       contourSyncHook()
+      bgImageSyncHook()
+      navBgImageSyncHook()
       scrollAnimSyncHook()
     }
     if (typeof document !== 'undefined' && document.body !== null) installWatermarkObserver()

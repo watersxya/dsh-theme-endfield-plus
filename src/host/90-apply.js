@@ -30,6 +30,12 @@ function apply(ctx, config) {
   // when its own switch is on, so the route itself costs nothing at rest.
   try { registerBalanceBridge(ctx); } catch (e) { /* never load-bearing */ }
 
+  /* The system bridge carries the "close DSH" control. It mounts
+     unconditionally for the same reason as the balance route above: the page
+     probes capability once on mount and only POSTs when the user clicks, so an
+     idle route costs nothing. */
+  try { registerSystemBridge(ctx); } catch (e) { /* never load-bearing */ }
+
   let audioInstalled = false;
   const startAudio = (settingsScope) => {
     if (audioInstalled) return;

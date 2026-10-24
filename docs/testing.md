@@ -415,6 +415,30 @@ node test/watermark-stacking.test.js
 
 ---
 
+## 自定义背景图（LOCAL PATCH）
+
+背景图没有独立的浏览器测试，它的正确性由三处既有守卫覆盖：
+
+- **字段与键表**：`test/settings-namespace.test.js` 逐字段比对 `src/host/10-identity.js` 的 `FIELD_DEFAULTS`、`src/client/10-prefs-store.js` 的两张表和 `test/fixtures/settings-scope.js`——九个 `bg*` / `navBg*` 字段任何一处漂移都会红（这正是背景图接进 Config 而不是 localStorage 的守门人）。
+- **面板行**：`test/settings-rows.test.js` 把 8 条背景图行登记进 `ROW_KEYS` 并钉住总行数与组数；行若存在而未登记，第二处断言（按页面自己的分组成员数）也会红。
+- **图层样式**：`check.js` 与 `test/selector-guard.test.js` 覆盖 `src/styles/theme.css` 末尾的 `data-endfield-bg-image` / `data-endfield-nav-bg-image` 规则——补丁里刻意丢掉的两个 hash-pinned 选择器（`wSkVaW_root` / `ydkMvW_root`）只要回来，anti-hash 就红。
+
+---
+
+## 关闭 DSH 服务（LOCAL PATCH）
+
+```bash
+npm run test:shutdown   # 下面三个文件按宿主→悬浮面→外观的顺序
+```
+
+**`system-bridge.test.js`** 进程内跑真实的 `lib/system-bridge.js`：假 `webServer` 收路由、假 `appExit` 计数。钉住契约：GET 探测报可用性与原因、POST 先响应后退出（60ms 的延迟不是装饰——内联退出会掐掉还在 flush 的 socket）、body 排空、405/409/404 分支，以及最要紧的一条：**`appExit` 缺席时返回 409 且绝不退出进程**。
+
+**`shutdown-button.test.js`** 在进程内 vm 里跑 `client.js`，自带会**记录** `appendChild` 的假 body——共享夹具的 no-op appendChild 会把「创建了但没挂上」和「根本没创建」洗成同一个形状，而这个文件存在的理由恰恰是后者（一次性 `disposed` latch 在首轮 reconcile 就吞掉了控件，开关显示开启、屏幕没有按钮）。它另带一个可切换的会话页标记（`[data-phase]` 三态 + 兄弟面板的 `data-dsh-*-active` 排除），验证开关翻转即时挂载/摘除、离开会话页摘除、回到会话页重挂、主题关闭后 destroy。
+
+**`shutdown-button-appearance.test.js`** 守外观——上一版所有断言都绿而屏幕上看不到按钮，两个独立缺陷（读一个全文件从未定义的 `--edge-ink` 令牌、深色下 `--edge-paper` 等于界面底色）都不在「数节点」的守卫范围内。它直接读样式字符串：令牌必须有定义、ink 不得再等于 paper、chip 尺寸 ≥38px、glyph ≥19px、圆角与 transition 必须带 `!important`（对抗主题对裸 `button` 的两条清零规则）、最淡状态 ≥0.30、armed 态用 `--edge-accent` 跟随配色。
+
+---
+
 ## 截图辅助
 
 ```bash

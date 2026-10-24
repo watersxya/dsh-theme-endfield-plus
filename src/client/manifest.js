@@ -39,6 +39,9 @@ module.exports = [
   { file: '15-palette.js' },
   { file: '16-watermark.js' },
 
+  /* ---- LOCAL PATCH：自定义背景图（上游无此分区） -------------------- */
+  { file: '17-bg-image.js' },
+
   /* ---- 等高线背景（含生成的内嵌 worker） ---------------------------- */
   { file: '20-contour.js' },
   { file: '21-contour-worker.embed.js' },
@@ -56,6 +59,10 @@ module.exports = [
 
   /* ---- 峰谷定价窗口与挂载 -------------------------------------------- */
   { file: '40-balance-pricing.js' },
+
+  /* ---- LOCAL PATCH：关闭 DSH 悬浮按钮（上游无此分区；同步入口在 43-*） -- */
+  { file: '40b-shutdown-button.js' },
+
   { file: '41-mount-tokens.js' },
 
   /* ---- 主题样式表：唯一那个巨型模板字面量的内容 ---------------------- */

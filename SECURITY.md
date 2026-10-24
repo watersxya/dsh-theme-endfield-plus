@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | `index.js`（宿主半） | 是 | 是（loader 直接 `require` 的包入口，`main` 与 `exports["."]` 都指向它） |
 | `client.js`（Web 半） | 是 | 是 |
-| `lib/`（宿主侧通知引擎：`audio.js` / `tone.js` / `slots.js`） | 是 | 是（`index.js` 顶层 `require('./lib/audio.js')`） |
+| `lib/`（宿主侧通知引擎：`audio.js` / `tone.js` / `slots.js`；「关闭 DSH」桥：`system-bridge.js`，LOCAL PATCH） | 是 | 是（`index.js` 顶层 `require('./lib/audio.js')` 与 `require('./lib/system-bridge.js')`） |
 | `sounds/`（5 个 `.wav` 提示音） | 是 | 是（作为数据由 `lib/audio.js` 读取、拷贝到缓存目录后交给播放器） |
 | `locale/`（`en.json` / `zh.json`：插件卡片展示文案，`{"meta":{"title","description"}}`） | 是 | 否（由 DSH 的插件元信息读取器按 `<包>/locale/<语言>.json` 读取，插件代码不加载） |
 | `cordis.patch.yml` | 是 | 是（挂载入口） |
@@ -29,7 +29,7 @@ locale, README.md, docs, lib, sounds, LICENSE`，外加 npm 始终包含的 `pac
 
 ### 1.1 宿主半真正拥有的能力（人工审阅从这里开始）
 
-签名扫描只会报"长得像危险"的字符串，下面三处才是需要判断的**实际权限**：
+签名扫描只会报"长得像危险"的字符串，下面四处才是需要判断的**实际权限**：
 
 > **本小节的括号行号是写就时的定位，不随代码维护。** 产物由 `src/host/` 片段拼接生成，
 > 任何片段增删都会让行号整体平移；下一条只保证"这段代码在哪、干什么"，不保证行号永远准。
@@ -49,6 +49,17 @@ locale, README.md, docs, lib, sounds, LICENSE`，外加 npm 始终包含的 `pac
 3. **一条回环 HTTP 路由**（`index.js:966-1063`，`/theme-endfield/audio`）。供设置页做试听
    与诊断，`POST` 分支会以 `force: true` 绕过限速直接放声。该 handler **自身不做 Origin /
    会话校验**，依赖宿主 webServer 的鉴权与前缀归属；`readJson` 有 64 KB 截断但没有超时。
+4. **（LOCAL PATCH）一条结束自身进程的回环路由**（`lib/system-bridge.js`，
+   `/theme-endfield/system`）。`POST /theme-endfield/system/shutdown` 调用启动器提供的
+   `appExit`（等同在该窗口按 Ctrl+C，退出码 130），结束的是 **DSH 进程本身**——这是
+   本包唯一能终止运行中进程的能力，也因此是这里最需要判断的一条权限。它的边界：
+   只取 `ctx.get('appExit')` 这一个服务，不碰 `child_process`、不碰 `shutdown.exe` /
+   `Stop-Computer` / `Rundll32 powrprof`，没有任何通向关机、重启、注销系统的路径；
+   `appExit` 缺席时返回 409 而不是退进程（`test/system-bridge.test.js` 钉住）。
+   与第 3 条同一信任模型：handler 自身不做 Origin / 会话校验，依赖宿主 webServer 的
+   鉴权与前缀归属——**本机任何能连上这个 loopback 端口的进程都能发这一发 POST**，
+   与能打 `/theme-endfield/audio/preview` 放声的是同一批人；页面上额外的两下确认
+   只是防误触，不是安全边界。同样请求 body 有 1 KB 截断。
 
 ## 2. 实测扫描结果
 

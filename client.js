@@ -189,6 +189,27 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
          /theme-endfield/balance route. Ships OFF so an upgrade never adds a
          floating element the user did not ask for. */
       balanceCapsule: '0',
+      /* LOCAL PATCH (not upstream): 自定义背景图. Two independent layers — a
+         global full-page sheet and an optional navigation-column overlay. The
+         upstream tree has no background-image feature at all, so these nine rows
+         mirror the host FIELD_DEFAULTS in index.js. Both layers ship OFF. */
+      bgImageOn: '0',
+      bgImageUrl: '',
+      bgImageMask: '55',
+      bgImageFit: 'cover',
+      navBgImageOn: '0',
+      navBgImageUrl: '',
+      navBgImageOpacity: '100',
+      navBgImageMask: '65',
+      navBgImageFit: 'cover',
+      /* LOCAL PATCH (not upstream): 关闭 DSH 悬浮按钮. This field must be
+         listed here AND in PREFS_KEY_TO_FIELD below — a field present in one
+         table but absent from the other reads as `undefined`, and `=== '1'`
+         against undefined is permanently false. That is the exact failure this
+         pair of tables exists to prevent: the switch renders, the value saves,
+         and nothing ever turns on. test/settings-namespace.test.js guards the
+         two tables against drifting apart. */
+      shutdownButton: '0',
       /* 渠道额度胶囊的右侧百分比读数选「已用」还是「剩余」——两个值都有真实语义，
          不存在默认就错的答案，所以默认 used（与插件自身徽章一致的读法）。
          仅影响 credits 模式的右侧百分比槽位；左侧主数字始终为剩余额度。 */
@@ -287,6 +308,25 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       'dsh-theme-endfield-balance-capsule-position': 'balanceCapsulePosition',
       'dsh-theme-endfield-balance-capsule-sidebar-hide': 'balanceCapsuleSidebarHide',
       'dsh-theme-endfield-balance-capsule-hover-hide': 'balanceCapsuleHoverHide',
+      /* LOCAL PATCH: 自定义背景图. Compound tails DO NOT equal their schema
+         fields, so these must be listed — the prefix-strip fallback would turn
+         'dsh-theme-endfield-bg-image-on' into 'bgImageOn' by luck here, but
+         'nav-bg-image-on' only resolves because it is written out below rather
+         than derived. Listing all nine keeps the table complete, which
+         test/settings-namespace.test.js asserts for every declared host field. */
+      'dsh-theme-endfield-bg-image-on': 'bgImageOn',
+      'dsh-theme-endfield-bg-image-url': 'bgImageUrl',
+      'dsh-theme-endfield-bg-image-mask': 'bgImageMask',
+      'dsh-theme-endfield-bg-image-fit': 'bgImageFit',
+      'dsh-theme-endfield-nav-bg-image-on': 'navBgImageOn',
+      'dsh-theme-endfield-nav-bg-image-url': 'navBgImageUrl',
+      'dsh-theme-endfield-nav-bg-image-opacity': 'navBgImageOpacity',
+      'dsh-theme-endfield-nav-bg-image-mask': 'navBgImageMask',
+      'dsh-theme-endfield-nav-bg-image-fit': 'navBgImageFit',
+      /* LOCAL PATCH: 关闭 DSH 悬浮按钮. Written out rather than derived — the
+         compound tail 'shutdown-button' is not the field name 'shutdownButton',
+         so the prefix-strip fallback below would get this one wrong. */
+      'dsh-theme-endfield-shutdown-button': 'shutdownButton',
       /* 音频通知. These tails happen to equal their schema fields, so every one of
          them would also resolve correctly through the prefix-strip fallback — they
          are listed explicitly because test/settings-namespace.test.js asserts that
@@ -352,6 +392,15 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
     const AUDIO_STATE_URL = '/theme-endfield/audio/state'
     const AUDIO_PREVIEW_URL = '/theme-endfield/audio/preview'
     const AUDIO_ATTENTION_URL = '/theme-endfield/audio/attention'
+    /* ---------- 关闭 DSH（LOCAL PATCH）----------
+       The page cannot end the process that is serving it, so both the capability
+       probe and the action are host routes. Same arrangement as the audio and
+       balance bridges, and for the same reason: the browser has no access to the
+       process on the other side of the socket. */
+    const SYSTEM_STATE_URL = '/theme-endfield/system'
+    const SHUTDOWN_URL = '/theme-endfield/system/shutdown'
+    const SHUTDOWN_BUTTON_KEY = 'shutdownButton'
+    const isShutdownButtonOn = () => prefsGet(SHUTDOWN_BUTTON_KEY) === '1'
     /* ---------- 顶部余额胶囊 (host half owns the balance query) ----------
        The page cannot reach the account service itself — only Host consumers
        can obtain the request credential — so the capsule polls the host-side
@@ -1621,6 +1670,14 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
        later is in its temporal dead zone during apply() — and `typeof` does NOT
        protect against a TDZ ReferenceError the way it does for an undeclared name. */
     let contourSyncHook = () => {}
+    /* LOCAL PATCH: background-image layers ride the same MutationObserver as the
+       contour sheet — the app frame is created during boot and replaced on some
+       route changes, so both layers must be able to (re)attach later. Declared
+       here as real mutable bindings for the same TDZ reason as the
+       contourSyncHook above, and assigned by src/client/17-bg-image.js, the
+       fragment that defines the reconcilers. */
+    let bgImageSyncHook = () => {}
+    let navBgImageSyncHook = () => {}
     /* Same seam for the output-scroll animator: it too has to attach to nodes the
        app renders asynchronously (the conversation scrollport), and the observer
        below is already the page's "something changed, re-attach" channel. Declared
@@ -1643,6 +1700,8 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
         // fires on every DOM change on the page, including every streaming token,
         // so the hook's first act is an O(1) "still attached?" check.
         contourSyncHook()
+        bgImageSyncHook()
+        navBgImageSyncHook()
         scrollAnimSyncHook()
       })
       watermarkObserver.observe(document.body, { childList: true, subtree: true })
@@ -1652,12 +1711,264 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       if (watermarkObserver === null) return
       syncWatermarkVisibility()
       contourSyncHook()
+      bgImageSyncHook()
+      navBgImageSyncHook()
       scrollAnimSyncHook()
     }
     if (typeof document !== 'undefined' && document.body !== null) installWatermarkObserver()
     else if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
       document.addEventListener('DOMContentLoaded', watermarkObserverLate, { once: true })
     }
+    /* ================= LOCAL PATCH (not upstream): 自定义背景图 =================
+       Two independent image layers: a global full-page sheet mounted inside the
+       app frame and an optional overlay covering only the navigation column.
+       The feature exists only in this fork (upstream has no background-image at
+       all), and it lives in its own fragment precisely so it can be dropped
+       without a merge conflict. Every row here carries the LOCAL PATCH marker.
+
+       Wiring contract:
+         - the nine prefs fields are declared in 10-prefs-store.js and mirror the
+           host FIELD_DEFAULTS (src/host/10-identity.js);
+         - the two reconcilers are mounted on the watermark MutationObserver
+           (16-watermark.js) through bgImageSyncHook / navBgImageSyncHook;
+           the assignments at the bottom of this fragment are safe because the
+           fragment order is 16 -> 17, so those `let` bindings already exist;
+         - findAppFrame is the frame locator defined in 20-contour.js, further
+           down the bundle — the same late-const seam that 31-thunder.js and
+           40-balance-pricing.js already ride: the observers only call the hooks
+           on DOM-change passes, by which time every const in apply() has settled;
+         - the geometry CSS lives at the bottom of the theme sheet
+           (src/styles/theme.css), after every upstream rule.
+     */
+    const BG_IMAGE_ON_KEY = 'dsh-theme-endfield-bg-image-on'
+    const BG_IMAGE_URL_KEY = 'dsh-theme-endfield-bg-image-url'
+    const BG_IMAGE_MASK_KEY = 'dsh-theme-endfield-bg-image-mask'
+    const BG_IMAGE_FIT_KEY = 'dsh-theme-endfield-bg-image-fit'
+    const BG_IMAGE_MASK_DEFAULT = 55
+    /* Stable body class while the global full-page image is active. This is what
+       owns the background transparency (especially the sidebar) instead of
+       relying only on transient DOM/:has() state, so the nav does not flicker
+       or only reveal the image on hover. */
+    const BG_ACTIVE_CLASS = 'theme-endfield-bg-on'
+    const BG_IMAGE_MASK_MIN = 0
+    const BG_IMAGE_MASK_MAX = 90
+    const BG_IMAGE_FIT_OPTIONS = ['cover', 'contain']
+    // Default OFF (=== '1'): a full-bleed image layer is opt-in decoration.
+    const isBgImageOn = () => prefsGet(BG_IMAGE_ON_KEY) === '1'
+    const readBgImageUrl = () => {
+      const raw = prefsGet(BG_IMAGE_URL_KEY)
+      return typeof raw === 'string' ? raw.trim() : ''
+    }
+    const readBgImageMask = () => {
+      const raw = prefsGet(BG_IMAGE_MASK_KEY)
+      if (raw === '') return BG_IMAGE_MASK_DEFAULT
+      const value = Number(raw)
+      if (!Number.isFinite(value)) return BG_IMAGE_MASK_DEFAULT
+      return Math.min(BG_IMAGE_MASK_MAX, Math.max(BG_IMAGE_MASK_MIN, Math.round(value)))
+    }
+    const readBgImageFit = () => {
+      const raw = prefsGet(BG_IMAGE_FIT_KEY)
+      return BG_IMAGE_FIT_OPTIONS.indexOf(raw) !== -1 ? raw : 'cover'
+    }
+    const syncBgImageActiveClass = () => {
+      if (typeof document === 'undefined' || document.body === null) return
+      const on = isEnabled() && isBgImageOn() && readBgImageUrl() !== ''
+      if (on) document.body.classList.add(BG_ACTIVE_CLASS)
+      else document.body.classList.remove(BG_ACTIVE_CLASS)
+      /* Also set the transparency inline on the concrete layout containers.
+         This keeps the sidebar and other columns transparent even if a hover /
+         quietBars / class-toggling rule would otherwise re-opaque them. */
+      const transparentSelectors = [
+        '[class$="_sidebarCol"]',
+        '[class$="_sidebarCol"] [class$="_root"]',
+        '[class$="_centerCol"]',
+        '[class$="_rightbarCol"]',
+        '[class$="_detailsCol"]',
+        '[class$="_detailsCol"] [class$="_root"]',
+        '[data-phase]',
+      ]
+      for (const selector of transparentSelectors) {
+        document.querySelectorAll(selector).forEach((el) => {
+          if (on) el.style.backgroundColor = 'transparent'
+          else el.style.backgroundColor = ''
+        })
+      }
+    }
+
+    /* ---------- navigation overlay background image (independent layer) ------
+       An optional second image layer that covers only the left navigation /
+       sidebar column (sidebarCol). When disabled it is not mounted at all, so the
+       global full-page image shows through the (already transparent) sidebar.
+       When enabled it paints above the global image inside the sidebar and has
+       its own opacity + scrim controls so the "New Session / Settings" labels
+       remain readable. */
+    const NAV_BG_IMAGE_ON_KEY = 'dsh-theme-endfield-nav-bg-image-on'
+    const NAV_BG_IMAGE_URL_KEY = 'dsh-theme-endfield-nav-bg-image-url'
+    const NAV_BG_IMAGE_OPACITY_KEY = 'dsh-theme-endfield-nav-bg-image-opacity'
+    const NAV_BG_IMAGE_MASK_KEY = 'dsh-theme-endfield-nav-bg-image-mask'
+    const NAV_BG_IMAGE_FIT_KEY = 'dsh-theme-endfield-nav-bg-image-fit'
+    const NAV_BG_IMAGE_OPACITY_DEFAULT = 100
+    const NAV_BG_IMAGE_OPACITY_MIN = 0
+    const NAV_BG_IMAGE_OPACITY_MAX = 100
+    const NAV_BG_IMAGE_MASK_DEFAULT = 65
+    const NAV_BG_IMAGE_MASK_MIN = 0
+    const NAV_BG_IMAGE_MASK_MAX = 90
+    const NAV_BG_IMAGE_FIT_OPTIONS = ['cover', 'contain']
+    const isNavBgImageOn = () => prefsGet(NAV_BG_IMAGE_ON_KEY) === '1'
+    const readNavBgImageUrl = () => {
+      const raw = prefsGet(NAV_BG_IMAGE_URL_KEY)
+      return typeof raw === 'string' ? raw.trim() : ''
+    }
+    const readNavBgImageOpacity = () => {
+      const raw = prefsGet(NAV_BG_IMAGE_OPACITY_KEY)
+      if (raw === '') return NAV_BG_IMAGE_OPACITY_DEFAULT
+      const value = Number(raw)
+      if (!Number.isFinite(value)) return NAV_BG_IMAGE_OPACITY_DEFAULT
+      return Math.min(NAV_BG_IMAGE_OPACITY_MAX, Math.max(NAV_BG_IMAGE_OPACITY_MIN, Math.round(value)))
+    }
+    const readNavBgImageMask = () => {
+      const raw = prefsGet(NAV_BG_IMAGE_MASK_KEY)
+      if (raw === '') return NAV_BG_IMAGE_MASK_DEFAULT
+      const value = Number(raw)
+      if (!Number.isFinite(value)) return NAV_BG_IMAGE_MASK_DEFAULT
+      return Math.min(NAV_BG_IMAGE_MASK_MAX, Math.max(NAV_BG_IMAGE_MASK_MIN, Math.round(value)))
+    }
+    const readNavBgImageFit = () => {
+      const raw = prefsGet(NAV_BG_IMAGE_FIT_KEY)
+      return NAV_BG_IMAGE_FIT_OPTIONS.indexOf(raw) !== -1 ? raw : 'cover'
+    }
+
+    let bgImageWrap = null
+    let bgImageHost = null
+
+    const bgImageTeardown = () => {
+      if (bgImageWrap !== null && bgImageWrap.parentNode) bgImageWrap.parentNode.removeChild(bgImageWrap)
+      bgImageWrap = null
+      bgImageHost = null
+    }
+    /* CSSOM is used for the dynamic parts (image URL, fit, mask) so the stylesheet
+       only has to define the geometry and the mount-time guards. The wrapper carries
+       no text, so the same translation-proofing as the wordmark is unnecessary; it
+       is aria-hidden because it is decorative. */
+    const applyBgImageStyles = () => {
+      if (bgImageWrap === null) return
+      const url = readBgImageUrl()
+      const mask = readBgImageMask()
+      const fit = readBgImageFit()
+      /* Only touch the DOM when a value actually changed: this runs on every page
+         mutation through the observer, so the common path must be a string compare,
+         not a layout/style write. */
+      const nextImage = url !== '' ? `url("${url}")` : 'none'
+      if (bgImageWrap.style.backgroundImage !== nextImage) bgImageWrap.style.backgroundImage = nextImage
+      const nextMask = mask + '%'
+      if (bgImageWrap.style.getPropertyValue('--edge-bg-mask') !== nextMask) bgImageWrap.style.setProperty('--edge-bg-mask', nextMask)
+      if (bgImageWrap.style.getPropertyValue('--edge-bg-fit') !== fit) bgImageWrap.style.setProperty('--edge-bg-fit', fit)
+    }
+
+    /** Build/refresh/remove the global (whole-page) background layer. */
+    const syncBgImage = () => {
+      syncBgImageActiveClass()
+      const on = isEnabled() && isBgImageOn() && readBgImageUrl() !== ''
+      if (!on) {
+        if (bgImageWrap !== null) bgImageTeardown()
+        return
+      }
+      const attached = bgImageWrap !== null && bgImageHost !== null
+        && bgImageWrap.parentNode === bgImageHost && bgImageHost.isConnected
+      if (attached) {
+        applyBgImageStyles()
+        return
+      }
+      const host = findAppFrame()
+      if (host === null) {
+        // Frame not rendered yet; a later mutation will retry through the hooks.
+        if (bgImageWrap !== null) bgImageTeardown()
+        return
+      }
+      if (bgImageWrap !== null && bgImageHost !== host) bgImageTeardown()
+      if (bgImageWrap === null) {
+        const wrap = document.createElement('div')
+        wrap.setAttribute('data-endfield-bg-image', '')
+        wrap.setAttribute('aria-hidden', 'true')
+        /* First child keeps the image at the bottom of the frame's paint order;
+           if the contour sheet is also mounted, the image sits beneath the
+           contour lines rather than covering them. */
+        if (host.firstChild) host.insertBefore(wrap, host.firstChild)
+        else host.appendChild(wrap)
+        bgImageWrap = wrap
+        bgImageHost = host
+      }
+      applyBgImageStyles()
+    }
+
+
+    let navBgImageWrap = null
+    let navBgImageHost = null
+
+    const findNavBgImageHost = () => {
+      if (typeof document === 'undefined') return null
+      return document.querySelector('[class$="_sidebarCol"]') || document.querySelector('[class*="_sidebarCol"]')
+    }
+
+    const navBgImageTeardown = () => {
+      if (navBgImageWrap !== null && navBgImageWrap.parentNode) navBgImageWrap.parentNode.removeChild(navBgImageWrap)
+      navBgImageWrap = null
+      navBgImageHost = null
+    }
+
+    const applyNavBgImageStyles = () => {
+      if (navBgImageWrap === null) return
+      const url = readNavBgImageUrl()
+      const opacity = readNavBgImageOpacity()
+      const mask = readNavBgImageMask()
+      const fit = readNavBgImageFit()
+      const nextImage = url !== '' ? `url("${url}")` : 'none'
+      if (navBgImageWrap.style.backgroundImage !== nextImage) navBgImageWrap.style.backgroundImage = nextImage
+      const nextOpacity = String(opacity / 100)
+      if (navBgImageWrap.style.opacity !== nextOpacity) navBgImageWrap.style.opacity = nextOpacity
+      const nextMask = mask + '%'
+      if (navBgImageWrap.style.getPropertyValue('--edge-nav-mask') !== nextMask) navBgImageWrap.style.setProperty('--edge-nav-mask', nextMask)
+      if (navBgImageWrap.style.getPropertyValue('--edge-nav-fit') !== fit) navBgImageWrap.style.setProperty('--edge-nav-fit', fit)
+    }
+
+    /** Build/refresh/remove the navigation overlay background layer. */
+    const syncNavBgImage = () => {
+      const on = isEnabled() && isNavBgImageOn() && readNavBgImageUrl() !== ''
+      if (!on) {
+        if (navBgImageWrap !== null) navBgImageTeardown()
+        return
+      }
+      const attached = navBgImageWrap !== null && navBgImageHost !== null
+        && navBgImageWrap.parentNode === navBgImageHost && navBgImageHost.isConnected
+      if (attached) {
+        applyNavBgImageStyles()
+        return
+      }
+      const host = findNavBgImageHost()
+      if (host === null) {
+        if (navBgImageWrap !== null) navBgImageTeardown()
+        return
+      }
+      if (navBgImageWrap !== null && navBgImageHost !== host) navBgImageTeardown()
+      if (navBgImageWrap === null) {
+        const wrap = document.createElement('div')
+        wrap.setAttribute('data-endfield-nav-bg-image', '')
+        wrap.setAttribute('aria-hidden', 'true')
+        if (host.firstChild) host.insertBefore(wrap, host.firstChild)
+        else host.appendChild(wrap)
+        navBgImageWrap = wrap
+        navBgImageHost = host
+      }
+      applyNavBgImageStyles()
+    }
+
+
+
+    /* Install the two reconcilers on the observer declared in 16-watermark.js.
+       This fragment runs after that one, so the bindings exist and no TDZ is
+       involved (see the wiring note above). */
+    bgImageSyncHook = syncBgImage
+    navBgImageSyncHook = syncNavBgImage
 
     /* ---------- contour (topographic) background ------------------------------
        A signal-yellow topographic sheet behind the whole app, in the style of the
@@ -5641,6 +5952,394 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       if (balancePositionChanged()) destroyBalanceCapsule()
       showBalanceCapsule()
     }
+    /* ================= LOCAL PATCH (not upstream): 关闭 DSH 悬浮按钮 =================
+       The control lives beside the other floating surfaces (40-balance-pricing.js
+       above, 33-balance-capsule.js before it) rather than in the settings panel:
+       a control that ends the process is an ACTION, and the panel is for
+       configuration. The settings row (51-settings-page.js) only flips the
+       switch and calls syncShutdownButton(), so the control appears or vanishes
+       the moment the switch is flipped, not on the next page load.
+       Host half: lib/system-bridge.js (GET /theme-endfield/system probes the
+       appExit capability, POST .../shutdown requests the exit).
+     */
+    /* ---------- 关闭 DSH 悬浮按钮（LOCAL PATCH）----------
+       Kept beside the other floating surfaces rather than in the settings panel:
+       a control that ends the process is an ACTION, and the panel is for
+       configuration. syncShutdownButton() is also what toggleShutdownButton()
+       calls, so flipping the switch makes the button appear or vanish now
+       instead of on the next page load.
+
+       WHY A FACTORY AND NOT INLINE STATEMENTS. The control is a small state
+       machine (idle → armed → acting) with its own node, listeners and timers.
+       Written as straight-line code inside mount() it would leak a listener and
+       a timer on every remount, and the "is it still armed" question would have
+       no single place to live. The factory owns exactly one button and hands
+       back three verbs.
+
+       WHY TWO CLICKS. Ending a running process from a 30px circle is one misclick
+       from losing an unsaved conversation, so the first click arms and only a
+       second one inside the window acts. A native confirm() dialog is the
+       alternative and is deliberately NOT used: it is a heavier interruption than
+       the action warrants and it cannot be styled to match.
+
+       THE SAFETY LINE, restated because it is the point of the feature: this
+       asks the HOST to end the DSH process. It does not power off, restart or log
+       out the machine, and there is no path here that could — see
+       lib/system-bridge.js and test/system-bridge.test.js. */
+    const SHUTDOWN_ARM_MS = 3200
+    const shutdownButton = (() => {
+      let node = null
+      let armedUntil = 0
+      let available = true
+      let disposed = false
+
+      /* `--edge-ink` does not exist. It was referenced here and defined
+         nowhere in this file, so the fallback was always the one that
+         painted: #101110, which is ALSO what --edge-paper resolves to in
+         dark mode (--dsw-alias-bg-base). A dark glyph on a dark chip, at
+         30px, is invisible on screen while present in the DOM — exactly
+         the "the node exists but I cannot see it" report.
+
+         Both replacements below are tokens this theme actually defines, and
+         both are scheme-aware, so the chip inverts with the palette instead
+         of depending on a hardcoded pair that only works in one scheme:
+           ink    --dsw-alias-label-primary      #101110 / #f5f5f0
+           paper  --edge-paper                    light #e8e8e2 / dark #101110
+         The ink is also the token the settings panel's own labels read
+         (labelStyle, line 8375), so the control sits in the same type
+         system as the page it floats over. */
+
+      /* THE RIM IS LOAD-BEARING, and this is why.
+         --edge-paper resolves to #101110 in dark mode, which is also what the
+         dark app background is. So a chip filled with it has no boundary at
+         all: the circle reads as "nothing there", which is the second half of
+         the original report ("the node exists but I cannot see it" — after the
+         ink was fixed, the RIM was what still could not be seen).
+
+         The fill below is therefore NOT --edge-paper. It is this theme's own
+         glass recipe, copied from the bounded-frost block further down
+         (--edge-glass-fill / -edge / -sheen), because that is what every other
+         floating surface in this theme uses and it is the only treatment here
+         that separates cleanly from BOTH paper colours:
+             light  fill 248 247 240 @ .80   rim white @ .65
+             dark   fill  31 36 34  @ .76   rim white @ .18
+         The dark rim is only .18 alpha, which on a dark page reads as a faint
+         ring — so the rim is paired with an accent-coloured glow in the same
+         box-shadow. --edge-accent carries the palette (谷地黄 #fff500 /
+         武陵青 #14d0d0), so the control picks up the theme's hue instead of
+         being a neutral grey dot parked on someone's wallpaper.
+
+         Those glass tokens only exist while body[data-endfield-glass] is set,
+         i.e. only when the user turned the glass LAYER on. This control is
+         available with that layer off, so every value carries a literal
+         fallback that matches the same measured numbers. */
+      const CHIP_FILL = 'rgb(var(--edge-glass-fill, 248 247 240) / var(--edge-glass-alpha, 0.8))'
+      const CHIP_RIM = 'var(--edge-glass-edge, rgb(255 255 255 / 0.65))'
+      const CHIP_SHEEN = 'var(--edge-glass-sheen, rgb(255 255 255 / 0.35))'
+      const ACCENT_RGB = 'var(--edge-accent-rgb, 255, 245, 0)'
+      const restingBackground =
+        `${CHIP_FILL}, ${CHIP_SHEEN} linear-gradient(145deg, transparent 58%)`
+      /* Two layers of depth: the accent tint pools under the chip (the theme's
+         own glow idiom, see --edge-glow-light/-dark) and a neutral drop shadow
+         lifts it off the page. The dark-mode alpha is what carries the rim. */
+      const restingShadow =
+        `0 2px 12px rgba(0, 0, 0, 0.30), 0 0 0 1px rgba(${ACCENT_RGB}, 0.34), 0 0 14px rgba(${ACCENT_RGB}, 0.18)`
+
+      /* Set via setProperty(..., 'important') rather than assigned on
+         `style`, because the stylesheet zeroes rounding on every button and
+         kills every transition:
+             body:not(.theme-endfield-round) button { border-radius: 0 !important }
+             button, [role='button']                { transition: none !important }
+         Those two rules are meant for the app's own controls. A fixed
+         viewport-anchored control is not one of them, and without the
+         priority this button renders as a square with no feedback on
+         arm — which reads as "not responding" rather than "restyled". */
+      const IMPORTANT_STYLE = {
+        borderRadius: '50%',
+        transition: 'opacity 140ms ease, background-color 140ms ease, transform 140ms ease',
+      }
+
+      /* 38px, up from 30. The glyph is a single character, so it has to be
+         big enough to hit without aiming and big enough to read at a glance;
+         15px of ⏻ inside 30px was both. */
+      const baseStyle = {
+        position: 'fixed', right: '16px', bottom: '16px', zIndex: '2147483000',
+        width: '38px', height: '38px',
+        /* An explicit transparent border, NOT `border: none`. The rim is
+           drawn by the box-shadow ring above, so the border only has to hold
+           the box open — but it must EXIST, because the theme zeroes border
+           width on bare `button` selectors in places and a collapsed border
+           is one less thing that can differ between themes. */
+        border: '1px solid transparent',
+        cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        color: 'var(--dsw-alias-label-primary, #101110)',
+        background: restingBackground,
+        boxShadow: restingShadow,
+        /* Resting opacity stays below 1 on purpose: this is a control that
+           ends the user's session, so it should read as available without
+           competing with the conversation. Hover lifts it (see onOver). It was
+           .55 before, which on top of an already-dark chip was itself part of
+           why nothing could be seen. */
+        opacity: '0.82',
+        fontSize: '19px', lineHeight: '1', padding: '0',
+        WebkitUserSelect: 'none', userSelect: 'none',
+      }
+      const paint = (extra) => {
+        if (node === null) return
+        Object.assign(node.style, baseStyle, extra || {})
+        if (typeof node.style.setProperty === 'function') {
+          node.style.setProperty('border-radius', IMPORTANT_STYLE.borderRadius, 'important')
+          node.style.setProperty('transition', IMPORTANT_STYLE.transition, 'important')
+        } else {
+          Object.assign(node.style, IMPORTANT_STYLE)
+        }
+      }
+
+      const disarm = () => {
+        armedUntil = 0
+        if (node === null) return
+        node.setAttribute('data-armed', '0')
+        paint(available ? null : { opacity: '0.32', cursor: 'not-allowed' })
+      }
+
+      const act = () => {
+        if (typeof fetch !== 'function' || node === null) return
+        node.setAttribute('data-busy', '1')
+        paint({ opacity: '0.4', cursor: 'progress' })
+        fetch(SHUTDOWN_URL, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: '{}' })
+          .then((res) => (res.ok ? res.json() : null))
+          .then((json) => {
+            /* Success means the host already scheduled the exit and the socket is
+               about to die, so there is nothing to restore. Only a refusal needs
+               the button back. */
+            if (json && json.ok === true) return
+            if (node === null) return
+            node.removeAttribute('data-busy')
+            disarm()
+          })
+          .catch(() => {
+            /* The socket dies with the process, so a rejection is only meaningful
+               when the request never landed at all. */
+            if (node === null) return
+            node.removeAttribute('data-busy')
+            disarm()
+          })
+      }
+
+      const onClick = () => {
+        if (!available) return
+        if (armedUntil === 0) {
+          armedUntil = Date.now() + SHUTDOWN_ARM_MS
+          node.setAttribute('data-armed', '1')
+          /* The accent chip needs its OWN ink, not the paper-mode one: on the
+             yellow chip the page ink #101110 measures 15.26:1, but on the
+             teal chip #14d0d0 it is 9.88:1 — both AA, and both are the same
+             value only because this palette never goes lighter than #14d0d0.
+             Pinning #101110 rather than reading a token keeps the pair stable
+             if the chip colour is ever tuned upward.
+
+             The fill goes SOLID rather than through the glass recipe: at
+             1px from the glyph a translucent chip would let the page show
+             through the one pixel that decides whether the symbol reads. The
+             rim is kept (now as a dark ring) so the armed state keeps the
+             same circular silhouette it had at rest — a state change should
+             recolour the control, not resize it. */
+          paint({
+            background: 'var(--edge-accent, #fff500)',
+            color: '#101110',
+            opacity: '1',
+            boxShadow: `0 2px 14px rgba(0, 0, 0, 0.34), 0 0 0 1px rgba(0, 0, 0, 0.28)`,
+          })
+          /* Auto-disarm: a button left armed forever would turn the next
+             unrelated click into a shutdown. */
+          setTimeout(() => { if (armedUntil !== 0 && Date.now() >= armedUntil) disarm() }, SHUTDOWN_ARM_MS)
+          return
+        }
+        disarm()
+        act()
+      }
+      /* Hover raises opacity to full and strengthens the accent ring, so the
+         control reads as live on approach without moving. Disabled drops to
+         0.32 — enough to be findable, faint enough that it is obviously not
+         offered — and disabled keeps the rim visible so it does not vanish
+         into the page the way the pre-glass version did. */
+      const disabledLook = { opacity: '0.32', cursor: 'not-allowed' }
+      const onOver = () => {
+        if (node === null || armedUntil !== 0) return
+        paint(available
+          ? { opacity: '1', transform: 'scale(1.06)', boxShadow: `0 3px 16px rgba(0, 0, 0, 0.32), 0 0 0 1px rgba(${ACCENT_RGB}, 0.55), 0 0 20px rgba(${ACCENT_RGB}, 0.30)` }
+          : disabledLook)
+      }
+      const onOut = () => { if (node !== null && armedUntil === 0) paint(available ? null : disabledLook) }
+      const onDown = () => { if (node !== null) paint({ transform: 'scale(0.96)' }) }
+
+      /* ---------- WHERE THIS CONTROL BELONGS: the conversation page only --------
+       * The user asked for it in the conversation surface, and it is also
+       * correct to hide it elsewhere: a control that ends the session has no
+       * business floating over someone's bookshelf or board.
+       *
+       * MEASURED, not assumed. DSH has NO ROUTER — packages/client contains
+       * zero references to createHashRouter / BrowserRouter / pushState /
+       * location.hash. A plugin page is an OVERLAY inside the same document:
+       * plugins/novel-forge-alpha/src/client/mount.tsx appends its container to
+       * the centre column and flips `html[data-dsh-novelforge-active]`
+       * (mount.tsx:61), and CSS then switches .view from display:none to
+       * block. So the URL never changes and there is no route event to listen
+       * to — the only honest signal is the DOM.
+       *
+       * The obvious probe is wrong, and this file used it:
+       *   - `_sidebarCol` (AppFrame.tsx:280) is part of the PERMANENT app
+       *     frame. It renders on every page, plugin overlay included, so a
+       *     button gated on it stays visible over plugin pages too.
+       * The real conversation marker is
+       *   ui-conversation/.../ConversationMainPanel.tsx:46
+       *     <div className={css.root} data-phase={phase}>
+       * with phase in {hero, active, settling} — and CRUCIALLY the old
+       * check tested only [data-phase="hero"], which is the EMPTY conversation.
+       * Once a conversation exists the phase becomes "active", so a
+       * hero-only probe fails on exactly the page the user cares most about.
+       * Hence [data-phase] with no value.
+       *
+       * Presence is still not sufficient: the overlay leaves that node
+       * mounted underneath, so a plugin page reads "conversation present". The
+       * siblings' activation attributes are therefore excluded. That list is
+       * not a guess — it is the mutual-exclusion set declared by the plugins
+       * themselves (novel-forge mount.tsx:16-18 lists the other two).
+       */
+      const CONVERSATION_MARKER = '[class*="centerCol"] [class*="_root"][data-phase]'
+      const PLUGIN_ACTIVE_ATTRS = [
+        'data-dsh-novelforge-active',
+        'data-dsh-taskboard-active',
+        'data-dsh-ssh-active',
+      ]
+      const onConversationPage = () => {
+        if (typeof document === 'undefined' || document === null) return false
+        const docEl = document.documentElement
+        if (docEl === null || docEl === undefined) return false
+        /* One of the sibling panels owns the screen: not the conversation. */
+        for (let i = 0; i < PLUGIN_ACTIVE_ATTRS.length; i++) {
+          if (docEl.hasAttribute(PLUGIN_ACTIVE_ATTRS[i])) return false
+        }
+        return document.querySelector(CONVERSATION_MARKER) !== null
+      }
+      let pageWatch = null
+      const create = () => {
+        if (node !== null || disposed) return node
+        if (typeof document === 'undefined' || document === null) return null
+        if (typeof document.createElement !== 'function') return null
+        if (!onConversationPage()) return null
+        const el = document.createElement('button')
+        el.type = 'button'
+        // A glyph, not an SVG: keeps the control dependency-free and legible at
+        // 30px. The aria-label carries the meaning for anything that does not
+        // render the glyph.
+        el.textContent = '\u23FB'
+        el.setAttribute('data-endfield-shutdown', '')
+        el.setAttribute('data-armed', '0')
+        el.setAttribute('aria-label', 'Close DSH')
+        el.setAttribute('title', 'Close DSH')
+        Object.assign(el.style, baseStyle)
+        el.addEventListener('click', onClick)
+        el.addEventListener('mouseover', onOver)
+        el.addEventListener('mouseout', onOut)
+        el.addEventListener('mousedown', onDown)
+        const parent = document.body || document.documentElement
+        if (parent === null || parent === undefined) return null
+        parent.appendChild(el)
+        node = el
+        paint(available ? null : { opacity: '0.32', cursor: 'not-allowed' })
+        return node
+      }
+
+      const drop = () => {
+        if (node === null) return
+        try { node.removeEventListener('click', onClick) } catch (e) { /* gone */ }
+        try { node.removeEventListener('mouseover', onOver) } catch (e) { /* gone */ }
+        try { node.removeEventListener('mouseout', onOut) } catch (e) { /* gone */ }
+        try { node.removeEventListener('mousedown', onDown) } catch (e) { /* gone */ }
+        if (node.parentNode) { try { node.parentNode.removeChild(node) } catch (e) { /* already gone */ } }
+        node = null
+        armedUntil = 0
+      }
+
+      /* Probe capability on every sync rather than caching it at mount: the
+         launcher provides appExit, and a surface that gains it after boot should
+         start working without a reload. Cordis lookups are cheap. */
+      const refresh = () => {
+        if (typeof fetch !== 'function') return
+        fetch(SYSTEM_STATE_URL, { headers: { accept: 'application/json' } })
+          .then((res) => (res.ok ? res.json() : null))
+          .then((json) => {
+            if (json === null || json === undefined) return
+            const next = json.available === true
+            if (next === available) return
+            available = next
+            if (node === null) return
+            node.setAttribute('data-available', next ? '1' : '0')
+            if (!next) disarm(); else paint(null)
+          })
+          .catch(() => { /* route absent: assume available, let the click report */ })
+      }
+
+      /* No router exists (see CONVERSATION_MARKER), so nothing announces a panel
+         switch. Observe the two things that DO change: the html element's
+         attributes (that is where every plugin sets its -active flag) and the
+         subtree (that is where the conversation root is added on boot).
+         Deliberately narrow — no filter on the subtree, because the attribute
+         set we care about lives on <html> and is named in childList/subtree.
+         Cheap enough: this only fires reconcile(), which is idempotent. */
+      const ensurePageWatch = () => {
+        if (pageWatch !== null) return
+        if (typeof document === 'undefined' || typeof MutationObserver !== 'function') return
+        const docEl = document.documentElement
+        if (docEl === null || docEl === undefined) return
+        const recheck = () => {
+          if (disposed || isShutdownButtonOn() !== true) return
+          /* Cheap both ways: create() bails when the page is wrong, and drop()
+             detaches when it no longer belongs. Whichever transition this DOM
+             change caused, one of the two runs. */
+          if (onConversationPage()) create(); else drop()
+        }
+        try {
+          pageWatch = new MutationObserver(recheck)
+          pageWatch.observe(docEl, { attributes: true, childList: true, subtree: true })
+        } catch (e) { pageWatch = null }
+      }
+      const dropPageWatch = () => {
+        if (pageWatch === null) return
+        try { pageWatch.disconnect() } catch (e) { /* gone */ }
+        pageWatch = null
+      }
+
+      return {
+   sync: () => {
+          /* `disposed` used to be a one-way latch here, and that was a real bug:
+             destroyBalanceCapsule-style unmount runs whenever the THEME is
+             switched off — including the initial reconcile pass, which runs
+             before the user's preference has been read into the store. One
+             early destroy() then set the latch, `create()` returned early for
+             the rest of the page's life, and the switch read "on" with no button
+             on screen. Turning the theme off must remove the node, NOT retire
+             the controller. */
+          if (disposed) disposed = false
+    if (isShutdownButtonOn() !== true) { drop(); dropPageWatch(); return }
+          create()
+    /* Only watch while the switch is on: a MutationObserver left running for
+             an opted-out control is a permanent listener for nothing. */
+          ensurePageWatch()
+       refresh()
+        },
+        destroy: () => { drop(); dropPageWatch() },
+   }
+    })()
+
+    const syncShutdownButton = () => {
+      if (!isEnabled()) {
+        shutdownButton.destroy()
+        return
+      }
+      shutdownButton.sync()
+    }
 
     let disposeToken = () => {}
     let disposeStyles = () => {}
@@ -6314,6 +7013,175 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       }
       /* The composer card never gets a backdrop-filter in any tier or media state
          (fixed-descendant containing block — see the WHY comment above). */
+      /* ================= LOCAL PATCH: custom background image =================
+         Not part of upstream: the full-page sheet plus the navigation-column
+         overlay, and the four fixes that keep the nav from flickering black.
+         The image/fit/scrim values arrive as custom properties written from
+         JS (---edge-bg-mask / ---edge-bg-fit / ---edge-nav-mask / ---edge-nav-fit),
+         so this sheet only owns geometry and the mount-time guards. The scrim
+         washes the image toward the app's own bg-base rather than a fixed
+         black/white veil, because the app's text is designed against that
+         base — that is what keeps both schemes readable. */
+      /* ================= custom background image =================
+         Same mounting contract as the contour sheet: an inset:0 / z-index:0 child
+         of the app frame, painted above the frame's own background and below every
+         positioned descendant. The background-size/fit and scrim strength are set
+         as CSS custom properties from JS so the stylesheet only owns geometry.
+
+         The scrim uses the app's own bg-base rather than a fixed black/white veil,
+         because the app's text colours are designed against that base: washing the
+         image toward it keeps both light and dark UI readable. The user controls
+         the wash strength via the settings slider (---edge-bg-mask). */
+      [data-endfield-bg-image] {
+        position: absolute;
+        inset: 0;
+        /* 0 + the frame-child lift rule below puts this layer above the frame's
+           own background but behind the real content, without needing an
+           isolation/stacking-context trap on the frame. */
+        z-index: 0;
+        pointer-events: none;
+        overflow: hidden;
+        background-position: center;
+        background-repeat: no-repeat;
+        background-size: var(--edge-bg-fit, cover);
+      }
+      /* The scrim is a separate absolutely-positioned layer, not the wrapper's own
+         background: the wrapper's background is the image itself, so the veil has
+         to paint on top of it. Pointer events stay off on both. */
+      [data-endfield-bg-image]::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: color-mix(in srgb, var(--dsw-alias-bg-base) var(--edge-bg-mask, 55%), transparent);
+      }
+      /* The same descendant transparency rules as the contour sheet. They are kept
+         as separate selectors so either layer alone works; when both are mounted the
+         declarations are identical, so the later rule is a no-op re-statement. */
+      [class*='_frame']:has(> [data-endfield-bg-image]) {
+        background: transparent !important;
+      }
+      /* Lift the three layout columns above the background layer. This keeps
+         the image behind content without creating an isolation/stacking-context
+         trap on the frame (which would break fixed-position descendants such as
+         the full-screen settings overlay). Handles/overlays already carry their
+         own higher z-index and are left untouched. */
+      [class*='_frame']:has(> [data-endfield-bg-image]) > [class$='_sidebarCol'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) > [class$='_centerCol'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) > [class$='_rightbarCol'],
+      [class$='_detailsCol'] {
+        position: relative;
+      }
+      /* The fork also carried two hash-pinned module selectors here
+         ([class*='wSkVaW_root'] / [class*='ydkMvW_root']). They are DROPPED on
+         purpose: CSS-module class names carry the build hash, so they die
+         silently on the next app rehash, and 0.2 has already renamed both
+         surfaces. test/selector-guard.test.js fails if they come back. The
+         layout-column rules above cover the same containers by stable
+         class-suffix selectors. */
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_sidebarCol'] {
+        background: transparent !important;
+      }
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_sidebarCol'] [class$='_root'] {
+        background: transparent !important;
+      }
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_centerCol'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_rightbarCol'],
+      [class$='_detailsCol'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_rightbarCol'],
+      [class$='_detailsCol'] [class$='_root'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) [data-phase] {
+        background: transparent !important;
+      }
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_composerSeat'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) [data-composer-seat] {
+        background: linear-gradient(180deg,
+          rgba(0, 0, 0, 0) 0px,
+          color-mix(in srgb, var(--dsw-alias-bg-base) 82%, transparent) 36px) !important;
+      }
+      /* Stable body-class transparency: the global image layer owns a body class
+         (theme-endfield-bg-on) while it is active. These rules keep the sidebar,
+         conversation and details columns transparent without relying on transient
+         :has()/hover state, which is what caused the nav to only reveal the image
+         on hover. */
+      body.theme-endfield-bg-on [class*='_frame'] {
+        background: transparent !important;
+      }
+      body.theme-endfield-bg-on [class*='_frame'] > [class$='_sidebarCol'],
+      body.theme-endfield-bg-on [class*='_frame'] > [class$='_centerCol'],
+      body.theme-endfield-bg-on [class*='_frame'] > [class$='_rightbarCol'],
+      [class$='_detailsCol'] {
+        position: relative;
+      }
+      body.theme-endfield-bg-on [class$='_sidebarCol'],
+      body.theme-endfield-bg-on [class$='_sidebarCol'] [class$='_root'],
+      body.theme-endfield-bg-on [class$='_centerCol'],
+      body.theme-endfield-bg-on [class$='_rightbarCol'],
+      [class$='_detailsCol'],
+      body.theme-endfield-bg-on [class$='_rightbarCol'],
+      [class$='_detailsCol'] [class$='_root'],
+      body.theme-endfield-bg-on [data-phase] {
+        background: transparent !important;
+      }
+      /* The workspace list bottom fade otherwise ends at the opaque sidebar
+         fill and shows as a black bar above the footer/balance under a
+         background image. Make it fade to transparent too. */
+      body.theme-endfield-bg-on [class$='_sidebarCol'] {
+        --dsw-specific-sidebar-fill: transparent;
+      }
+      body.theme-endfield-bg-on [class*='_fade'] {
+        background: linear-gradient(to bottom, transparent, transparent) !important;
+      }
+      body.theme-endfield-bg-on [class$='_composerSeat'],
+      body.theme-endfield-bg-on [data-composer-seat] {
+        background: linear-gradient(180deg,
+          rgba(0, 0, 0, 0) 0px,
+          color-mix(in srgb, var(--dsw-alias-bg-base) 82%, transparent) 36px) !important;
+      }
+      /* ================= navigation overlay background image =================
+         An optional second image layer that covers only the left navigation /
+         sidebar column. The sidebar column is not positioned by default, so it
+         is made relative only while this layer is mounted. The sidebar shell's
+         root owns an opaque fill, so it must be opened up for the overlay to be
+         visible; its own opacity and scrim are handled from JS/CSSOM. */
+      [data-endfield-nav-bg-image] {
+        position: absolute;
+        inset: 0;
+        /* 0 + the sidebar-child lift rule below keeps this overlay behind the
+           sidebar content without needing isolation on the sidebar column. */
+        z-index: 0;
+        pointer-events: none;
+        overflow: hidden;
+        background-position: center;
+        background-repeat: no-repeat;
+        background-size: var(--edge-nav-fit, cover);
+      }
+      [data-endfield-nav-bg-image]::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: color-mix(in srgb, var(--dsw-alias-bg-base) var(--edge-nav-mask, 65%), transparent);
+      }
+      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) {
+        /* Relative is needed as the containing block for the absolute overlay;
+           it does not trap fixed-position descendants the way transform/filter
+           would, so the full-screen settings overlay stays clickable. */
+        position: relative;
+        --dsw-specific-sidebar-fill: transparent;
+        background: transparent !important;
+      }
+      /* Lift the sidebar shell above the navigation overlay. Other direct
+         children, if any, keep their own stacking behavior. */
+      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) > [class$='_root'] {
+        position: relative;
+      }
+      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class$='_root'] {
+        background: transparent !important;
+      }
+      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class*='_fade'] {
+        background: linear-gradient(to bottom, transparent, transparent) !important;
+      }
       ::selection {
         color: #000;
         background: var(--edge-signal, var(--edge-accent));
@@ -8512,6 +9380,20 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       // Same for the balance capsule: its poll and its node both live inside the
       // themed page, and its styles were just torn down with the sheet above.
       destroyBalanceCapsule()
+      /* LOCAL PATCH: And the shutdown button. This one is not cosmetic cleanup:
+         the control ends a running process, so leaving it on an un-themed page
+         would put a live "close DSH" button on a page whose theme is off — and a
+         user who turned the theme off should not still be able to end the service
+         from the leftover node. */
+      shutdownButton.destroy()
+      /* LOCAL PATCH: and the two background layers, whose geometry lives in the
+         sheet just removed — an orphaned wrapper would sit there as a raw div
+         carrying a background image. The body class goes with them. */
+      bgImageTeardown()
+      navBgImageTeardown()
+      if (typeof document !== 'undefined' && document.body !== null) {
+        document.body.classList.remove(BG_ACTIVE_CLASS)
+      }
     }
 
     if (isEnabled()) {
@@ -8536,6 +9418,11 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       // 顶部余额胶囊: mounts only while its own switch is on, and polls the
       // host-side balance route only while mounted.
       syncBalanceCapsule()
+      /* LOCAL PATCH: the shutdown control is a surface like the watermark and
+         the capsule, so it is synced here — AFTER mount() has put the sheet in,
+         because it reads --edge-paper / --edge-accent from that sheet and would
+         otherwise paint itself with the fallback literals for its first paint. */
+      syncShutdownButton()
     }
 
     /* Live preference reconciler. The namespace scope subscription in the store
@@ -8572,6 +9459,13 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
         syncAudioAttentionWatch()
         // Same reason: it re-reads its switch and mounts or removes the capsule.
         syncBalanceCapsule()
+        /* LOCAL PATCH: And the shutdown control. Its absence here is why the
+           switch could read "on" with no button on screen: a settings write
+           lands in the DURABLE store, and this reconciler is the only thing
+           that re-derives surfaces from it. Mounting the control in apply()
+           covered page load and nothing else, so the one path a real user
+           takes — flip the switch — never reached it. */
+        syncShutdownButton()
       } else {
         // Switched off mid-session: the watcher must not keep polling a page the
         // theme no longer owns.
@@ -8579,6 +9473,11 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
         // And the capsule must not keep polling the balance route on an unthemed
         // page — destroyBalanceCapsule also clears its interval.
         destroyBalanceCapsule()
+        // LOCAL PATCH: same reasoning for the shutdown control: a page whose
+        // theme is off must not be carrying a live button that ends the process.
+        // Routed through the same helper as the enabled branch so the two paths
+        // cannot drift.
+        syncShutdownButton()
       }
     }
 
@@ -8690,6 +9589,26 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       wmPersistHintOn: '在对话等非新建会话页面也显示水印（置于正文之下）',
       wmPersistHintOff: '仅在新建会话页显示水印',
       wmPersistNeedWm: '请先开启背景水印',
+      /* LOCAL PATCH: 自定义背景图 */
+      bgImageRow: '自定义背景图',
+      bgImageOn: '开启背景图',
+      bgImageOff: '关闭背景图',
+      bgImageUrlLabel: '图片地址',
+      bgImageUrlHint: '支持 URL 或本机图片（存为 dataURL）。留空则不生效。',
+      bgImageMaskLabel: '遮罩强度',
+      bgImageFitLabel: '填充方式',
+      bgImageFitCover: '填充',
+      bgImageFitContain: '包含',
+      bgImagePick: '选择图片',
+      bgImageClear: '清除',
+      bgImageNeedUrl: '请先填写图片地址',
+      navBgImageRow: '导航区背景图',
+      navBgImageOn: '开启导航图',
+      navBgImageOff: '关闭导航图',
+      navBgImageUrlHint: '不开启时沿用整页背景图。',
+      navBgImageOpacityLabel: '不透明度',
+      navBgImageMaskLabel: '遮罩强度',
+      bgImageFontNote: '大图建议用 URL：dataURL 过大时无法写入设置。',
       loaderRow: '启动加载动画',
       loaderOn: '开启动画',
       loaderOff: '关闭动画',
@@ -8738,6 +9657,16 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       /* 音频通知：播放发生在宿主进程（lib/audio.js），所以这里的每一行都在
          说明「什么时候响」而不是「怎么响」；试听按钮走宿主真实播放链路。 */
       groupAudio: '音频',
+      /* --- 关闭 DSH（LOCAL PATCH）---
+         每一句都要说清「只结束服务、不动机器」，因为这是本插件唯一能结束
+         运行中进程的功能。写「关机」会让人以为它能关电脑。 */
+      groupSystem: '系统',
+      shutdownRow: '关闭 DSH 服务',
+      shutdownOn: '开启按钮',
+      shutdownOff: '关闭按钮',
+      shutdownHintOn: '在右下角放一个电源按钮，点两下结束 DSH 服务进程（等同在此窗口按 Ctrl+C）；不会关闭、重启或注销电脑',
+      shutdownHintOff: '默认关闭。开启后右下角出现电源按钮，两下确认才生效',
+      shutdownUnavailable: '当前启动方式不支持（appExit 未提供），按钮会保持禁用',
       audioRow: '音频通知',
       audioOn: '开启提示音',
       audioOff: '关闭提示音',
@@ -8873,6 +9802,26 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       wmPersistHintOn: 'Also shown on conversations and other pages, behind the text',
       wmPersistHintOff: 'Shown only on the new-session screen',
       wmPersistNeedWm: 'Turn on the background wordmark first',
+      /* LOCAL PATCH: custom background image */
+      bgImageRow: 'Custom background image',
+      bgImageOn: 'Turn on',
+      bgImageOff: 'Turn off',
+      bgImageUrlLabel: 'Image URL',
+      bgImageUrlHint: 'A URL or a local file (stored as a dataURL). Empty means off.',
+      bgImageMaskLabel: 'Scrim',
+      bgImageFitLabel: 'Fit',
+      bgImageFitCover: 'Cover',
+      bgImageFitContain: 'Contain',
+      bgImagePick: 'Pick image',
+      bgImageClear: 'Clear',
+      bgImageNeedUrl: 'Set an image URL first',
+      navBgImageRow: 'Navigation image',
+      navBgImageOn: 'Turn on',
+      navBgImageOff: 'Turn off',
+      navBgImageUrlHint: 'Off means the navigation shows the full-page image.',
+      navBgImageOpacityLabel: 'Opacity',
+      navBgImageMaskLabel: 'Scrim',
+      bgImageFontNote: 'Prefer a URL for large images: an oversized dataURL cannot be written to settings.',
       loaderRow: 'Boot animation',
       loaderOn: 'Turn on',
       loaderOff: 'Turn off',
@@ -8917,6 +9866,17 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
       creditDisplayHintRemaining: 'In credits mode the right-hand percentage shows the remaining share (of the reported quota) and the ring sweeps that same remaining share; the lead figure always stays the remaining balance. The slot stays empty when the channel reports no quota; the change applies at the next fetch',
       creditDisplayHintUsed: 'In credits mode the right-hand percentage shows the used share (of the reported quota) and the ring sweeps that same used share; the lead figure always stays the remaining balance. The slot stays empty when the channel reports no quota; the change applies at the next fetch',
       groupAudio: 'AUDIO',
+      /* --- close DSH (LOCAL PATCH) ---
+         Every line says "ends the service, not the machine": this is the only
+         capability in the package that can stop a running process, and calling
+         it "power off" would promise the machine rather than the process. */
+      groupSystem: 'SYSTEM',
+      shutdownRow: 'Close the DSH service',
+      shutdownOn: 'Show the button',
+      shutdownOff: 'Hide the button',
+      shutdownHintOn: 'Puts a power button in the bottom-right corner. Two clicks end the DSH service process (same as Ctrl+C in this window). It does not shut down, restart or log out the computer',
+      shutdownHintOff: 'Off by default. When on, a power button appears bottom-right and needs two clicks to fire',
+      shutdownUnavailable: 'Unavailable on this launch surface (appExit not provided); the button stays disabled',
       audioRow: 'Audio notifications',
       audioOn: 'Turn on',
       audioOff: 'Turn off',
@@ -9057,6 +10017,24 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
           const [audioVolume, setAudioVolume] = R.useState(readAudioVolume())
           const [audioHumanOnly, setAudioHumanOnly] = R.useState(isAudioHumanOnly())
           const [audioDiag, setAudioDiag] = R.useState(isAudioDiagOn())
+          /* --- 关闭 DSH（LOCAL PATCH）---
+             `shutdownNote` carries a HOST FACT: whether `appExit` was available
+             on this surface. The launcher provides it, and a surface that does
+             not launch the app has no way to get it — so the row must be able to
+             say "this build cannot" instead of offering a button that fails.
+             Kept out of the durable store for the same reason as `hostState`. */
+          const [shutdownButtonOn, setShutdownButtonOn] = R.useState(isShutdownButtonOn())
+          const [shutdownNote, setShutdownNote] = R.useState('')
+          const refreshShutdownState = () => {
+            if (typeof fetch !== 'function') return
+            fetch(SYSTEM_STATE_URL, { headers: { accept: 'application/json' } })
+              .then((res) => (res.ok ? res.json() : null))
+              .then((json) => {
+                if (!json) return
+                setShutdownNote(json.available === true ? '' : t('shutdownUnavailable'))
+              })
+              .catch(() => { /* host route absent: the switch just stays silent */ })
+          }
           const [hostState, setHostState] = R.useState(null)
           const [previewNote, setPreviewNote] = R.useState('')
           const refreshHostState = () => {
@@ -9328,7 +10306,102 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
             if (next) { loaderDone = false; destroyLoader(); runLoader() }
             else destroyLoader()
           }
-          const replayLoader = () => {
+          /* ---------- LOCAL PATCH: custom background image (panel handlers) ----------
+         Every `next` below is derived from the STORE (isBgImageOn / readBgImage*),
+         never from a React state variable — the panel's own state seeds from the
+         schema DEFAULT while the Host section is still 'loading', so a
+         state-derived `next` writes the wrong value to the durable section. That is
+         the same trap the upstream rows are written against. */
+      const setBgImageUrl = (value) => {
+        prefsSet(BG_IMAGE_URL_KEY, value)
+        syncBgImage()
+      }
+      const setNavBgImageUrl = (value) => {
+        prefsSet(NAV_BG_IMAGE_URL_KEY, value)
+        syncNavBgImage()
+      }
+      const toggleBgImage = () => {
+        const next = !isBgImageOn()
+        prefsSet(BG_IMAGE_ON_KEY, next ? '1' : '0')
+        if (next) syncBgImage()
+        else { bgImageTeardown(); syncBgImageActiveClass() }
+      }
+      const toggleNavBgImage = () => {
+        const next = !isNavBgImageOn()
+        prefsSet(NAV_BG_IMAGE_ON_KEY, next ? '1' : '0')
+        if (next) syncNavBgImage()
+        else navBgImageTeardown()
+      }
+      const setBgImageMask = (value) => {
+        const next = Math.min(BG_IMAGE_MASK_MAX, Math.max(BG_IMAGE_MASK_MIN, Math.round(Number(value))))
+        if (!Number.isFinite(next)) return
+        prefsSet(BG_IMAGE_MASK_KEY, String(next))
+        applyBgImageStyles()
+      }
+      const setNavBgImageOpacity = (value) => {
+        const next = Math.min(NAV_BG_IMAGE_OPACITY_MAX, Math.max(NAV_BG_IMAGE_OPACITY_MIN, Math.round(Number(value))))
+        if (!Number.isFinite(next)) return
+        prefsSet(NAV_BG_IMAGE_OPACITY_KEY, String(next))
+        applyNavBgImageStyles()
+      }
+      const setNavBgImageMask = (value) => {
+        const next = Math.min(NAV_BG_IMAGE_MASK_MAX, Math.max(NAV_BG_IMAGE_MASK_MIN, Math.round(Number(value))))
+        if (!Number.isFinite(next)) return
+        prefsSet(NAV_BG_IMAGE_MASK_KEY, String(next))
+        applyNavBgImageStyles()
+      }
+      const setBgImageFit = (value) => {
+        if (BG_IMAGE_FIT_OPTIONS.indexOf(value) === -1) return
+        prefsSet(BG_IMAGE_FIT_KEY, value)
+        applyBgImageStyles()
+      }
+      const setNavBgImageFit = (value) => {
+        if (NAV_BG_IMAGE_FIT_OPTIONS.indexOf(value) === -1) return
+        prefsSet(NAV_BG_IMAGE_FIT_KEY, value)
+        applyNavBgImageStyles()
+      }
+      const clearBgImage = () => {
+        prefsSet(BG_IMAGE_URL_KEY, '')
+        prefsSet(BG_IMAGE_ON_KEY, '0')
+        bgImageTeardown()
+        syncBgImageActiveClass()
+      }
+      const clearNavBgImage = () => {
+        prefsSet(NAV_BG_IMAGE_URL_KEY, '')
+        prefsSet(NAV_BG_IMAGE_ON_KEY, '0')
+        navBgImageTeardown()
+      }
+      /* A file picker writes a dataURL into the same field a pasted URL uses.
+         localStorage is not the backing store any more, so the quota that used to
+         bite here is now the schema section — a huge dataURL simply fails to
+         write, and the row says so rather than silently dropping the picture. */
+      const pickImageInto = (apply) => {
+        if (typeof document === 'undefined') return
+        const input = document.createElement('input')
+        /* The file picker is a convenience, not the feature: a host whose
+           createElement returns a stub (the test harness does) or that has no
+           FileReader must still be able to paste a URL by hand. Bail out
+           quietly instead of throwing on the click. */
+        if (!input || typeof input.addEventListener !== 'function') return
+        if (typeof FileReader === 'undefined') return
+        input.type = 'file'
+        input.accept = 'image/*'
+        input.addEventListener('change', () => {
+          const file = input.files && input.files[0]
+          if (!file) return
+          const reader = new FileReader()
+          reader.addEventListener('load', () => {
+            const data = typeof reader.result === 'string' ? reader.result : ''
+            if (data !== '') apply(data)
+          })
+          reader.readAsDataURL(file)
+        })
+        input.click()
+      }
+      const pickBgImageFile = () => pickImageInto(setBgImageUrl)
+      const pickNavBgImageFile = () => pickImageInto(setNavBgImageUrl)
+
+      const replayLoader = () => {
             loaderDone = false
             destroyLoader()
             runLoader()
@@ -9496,6 +10569,24 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
             const next = !audioDiag
             prefsSet(AUDIO_DIAG_KEY, next ? '1' : '0')
             setAudioDiag(next)
+          }
+          /* LOCAL PATCH: 关闭 DSH 悬浮按钮的开关。Derived from the STORE on every
+             click, like every other toggle in this panel — see the long note above
+             the other handlers for why the rendered switch and the store are two
+             different reads. */
+          const toggleShutdownButton = () => {
+            const next = isShutdownButtonOn() ? '0' : '1'
+            /* prefsSet takes the FULL namespaced key, not the field name — the
+               field is derived from the key tail by prefsFieldOf. Passing
+               'shutdownButton' would write a key nothing reads back. */
+            prefsSet('dsh-theme-endfield-shutdown-button', next)
+            setShutdownButtonOn(next === '1')
+            /* syncShutdownButton() reads the pref store, so the write above is
+               what it acts on. This call is what makes the control appear NOW
+               instead of after an arbitrary reload: without it the switch saves
+               correctly and then looks broken, because the durable value flips
+               and nothing on screen reacts until the next page load. */
+            syncShutdownButton()
           }
           const applySoundDir = (value) => {
             const text = typeof value === 'string' ? value.trim() : ''
@@ -9750,6 +10841,91 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
                   disabled: !wmOn,
                   title: wmOn ? '' : t('wmPersistNeedWm'),
                 }, t(wmPersist ? 'wmPersistOff' : 'wmPersistOn'))
+              ]),
+            ]),
+            /* --- LOCAL PATCH: 自定义背景图（上游无此组）--- */
+            R.createElement('div', { key: 'group-bgimage' }, [
+              groupTitle('02b', 'groupBg', false),
+              row('bg-image', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('bgImageRow') + t('sep') + stateOf(isBgImageOn()),
+                  R.createElement('span', { style: hintStyle }, t('bgImageUrlHint'))
+                ),
+                R.createElement('button', { type: 'button', onClick: toggleBgImage, style: btnStyleFor(isBgImageOn()) },
+                  t(isBgImageOn() ? 'bgImageOff' : 'bgImageOn'))
+              ]),
+              row('bg-image-url', true, [
+                R.createElement('span', { style: labelStyle }, t('bgImageUrlLabel')),
+                R.createElement('span', { style: { display: 'flex', gap: '8px', flex: '0 0 auto', alignItems: 'center' } },
+                  R.createElement('input', {
+                    type: 'text', value: readBgImageUrl(), placeholder: 'https://…',
+                    onChange: (e) => setBgImageUrl(e.target.value),
+                    style: {
+                      width: '220px', padding: '4px 8px', fontSize: '12px',
+                      color: 'var(--dsw-alias-label-primary)',
+                      background: 'var(--dsw-alias-bg-layer-1)',
+                      border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '0',
+                    },
+                  }),
+                  R.createElement('button', { type: 'button', onClick: pickBgImageFile, style: btnStyleFor(false, false) }, t('bgImagePick')),
+                  R.createElement('button', { type: 'button', onClick: clearBgImage, style: btnStyleFor(false, readBgImageUrl() === '') }, t('bgImageClear'))
+                )
+              ]),
+              row('bg-image-mask', false, [
+                R.createElement('span', { style: labelStyle }, t('bgImageMaskLabel') + t('sep') + readBgImageMask() + '%'),
+                R.createElement('input', {
+                  type: 'range', min: BG_IMAGE_MASK_MIN, max: BG_IMAGE_MASK_MAX, step: 1,
+                  value: readBgImageMask(), onChange: (e) => setBgImageMask(e.target.value),
+                  disabled: !isBgImageOn(),
+                })
+              ]),
+              row('bg-image-fit', false, [
+                R.createElement('span', { style: labelStyle }, t('bgImageFitLabel')),
+                R.createElement('span', { style: { display: 'flex', gap: '8px', flex: '0 0 auto' } },
+                  R.createElement('button', { type: 'button', onClick: () => setBgImageFit('cover'), style: btnStyleFor(readBgImageFit() === 'cover', !isBgImageOn()) }, t('bgImageFitCover')),
+                  R.createElement('button', { type: 'button', onClick: () => setBgImageFit('contain'), style: btnStyleFor(readBgImageFit() === 'contain', !isBgImageOn()) }, t('bgImageFitContain'))
+                )
+              ]),
+              row('nav-bg-image', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('navBgImageRow') + t('sep') + stateOf(isNavBgImageOn()),
+                  R.createElement('span', { style: hintStyle }, t('navBgImageUrlHint'))
+                ),
+                R.createElement('button', { type: 'button', onClick: toggleNavBgImage, style: btnStyleFor(isNavBgImageOn()) },
+                  t(isNavBgImageOn() ? 'navBgImageOff' : 'navBgImageOn'))
+              ]),
+              row('nav-bg-image-url', false, [
+                R.createElement('span', { style: labelStyle }, t('bgImageUrlLabel')),
+                R.createElement('span', { style: { display: 'flex', gap: '8px', flex: '0 0 auto', alignItems: 'center' } },
+                  R.createElement('input', {
+                    type: 'text', value: readNavBgImageUrl(), placeholder: 'https://…',
+                    onChange: (e) => setNavBgImageUrl(e.target.value),
+                    style: {
+                      width: '220px', padding: '4px 8px', fontSize: '12px',
+                      color: 'var(--dsw-alias-label-primary)',
+                      background: 'var(--dsw-alias-bg-layer-1)',
+                      border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '0',
+                    },
+                  }),
+                  R.createElement('button', { type: 'button', onClick: pickNavBgImageFile, style: btnStyleFor(false, false) }, t('bgImagePick')),
+                  R.createElement('button', { type: 'button', onClick: clearNavBgImage, style: btnStyleFor(false, readNavBgImageUrl() === '') }, t('bgImageClear'))
+                )
+              ]),
+              row('nav-bg-image-opacity', false, [
+                R.createElement('span', { style: labelStyle }, t('navBgImageOpacityLabel') + t('sep') + readNavBgImageOpacity() + '%'),
+                R.createElement('input', {
+                  type: 'range', min: NAV_BG_IMAGE_OPACITY_MIN, max: NAV_BG_IMAGE_OPACITY_MAX, step: 1,
+                  value: readNavBgImageOpacity(), onChange: (e) => setNavBgImageOpacity(e.target.value),
+                  disabled: !isNavBgImageOn(),
+                })
+              ]),
+              row('nav-bg-image-mask', true, [
+                R.createElement('span', { style: labelStyle }, t('navBgImageMaskLabel') + t('sep') + readNavBgImageMask() + '%'),
+                R.createElement('input', {
+                  type: 'range', min: NAV_BG_IMAGE_MASK_MIN, max: NAV_BG_IMAGE_MASK_MAX, step: 1,
+                  value: readNavBgImageMask(), onChange: (e) => setNavBgImageMask(e.target.value),
+                  disabled: !isNavBgImageOn(),
+                })
               ]),
             ]),
             /* --- 03 动画：输出滚动动画 + 启动加载动画 --- */
@@ -10111,6 +11287,23 @@ function apply(ctx) {    // Idempotency: the installed bundle can be applied mor
                   )
                 ),
                 R.createElement('button', { type: 'button', onClick: toggleAudioDiag, style: btnStyleFor(audioDiag) }, t(audioDiag ? 'audioDiagOff' : 'audioDiagOn'))
+              ]),
+              /* ==== 06 系统（LOCAL PATCH：关机按钮）====
+                 Only one row, and it is a SWITCH, not the button itself. The
+                 control lives with the other floating surfaces (syncShutdownButton)
+                 because a button that ends the process has no business living in
+                 a settings form — the form configures, the surface acts. */
+              groupTitle('06', 'groupSystem', false),
+              row('shutdown-button', true, [
+                R.createElement('span', { style: labelStyle },
+                  t('shutdownRow') + t('sep') + stateOf(shutdownButtonOn),
+                  R.createElement('span', { style: hintStyle },
+                    shutdownNote !== '' ? shutdownNote : t(shutdownButtonOn ? 'shutdownHintOn' : 'shutdownHintOff')
+                  )
+                ),
+                R.createElement('button', {
+                  type: 'button', onClick: toggleShutdownButton, style: btnStyleFor(shutdownButtonOn)
+                }, t(shutdownButtonOn ? 'shutdownOff' : 'shutdownOn'))
               ]),
             ]),
           ])

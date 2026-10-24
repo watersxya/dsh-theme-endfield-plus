@@ -62,6 +62,24 @@
           const [audioVolume, setAudioVolume] = R.useState(readAudioVolume())
           const [audioHumanOnly, setAudioHumanOnly] = R.useState(isAudioHumanOnly())
           const [audioDiag, setAudioDiag] = R.useState(isAudioDiagOn())
+          /* --- 关闭 DSH（LOCAL PATCH）---
+             `shutdownNote` carries a HOST FACT: whether `appExit` was available
+             on this surface. The launcher provides it, and a surface that does
+             not launch the app has no way to get it — so the row must be able to
+             say "this build cannot" instead of offering a button that fails.
+             Kept out of the durable store for the same reason as `hostState`. */
+          const [shutdownButtonOn, setShutdownButtonOn] = R.useState(isShutdownButtonOn())
+          const [shutdownNote, setShutdownNote] = R.useState('')
+          const refreshShutdownState = () => {
+            if (typeof fetch !== 'function') return
+            fetch(SYSTEM_STATE_URL, { headers: { accept: 'application/json' } })
+              .then((res) => (res.ok ? res.json() : null))
+              .then((json) => {
+                if (!json) return
+                setShutdownNote(json.available === true ? '' : t('shutdownUnavailable'))
+              })
+              .catch(() => { /* host route absent: the switch just stays silent */ })
+          }
           const [hostState, setHostState] = R.useState(null)
           const [previewNote, setPreviewNote] = R.useState('')
           const refreshHostState = () => {
@@ -333,7 +351,102 @@
             if (next) { loaderDone = false; destroyLoader(); runLoader() }
             else destroyLoader()
           }
-          const replayLoader = () => {
+          /* ---------- LOCAL PATCH: custom background image (panel handlers) ----------
+         Every `next` below is derived from the STORE (isBgImageOn / readBgImage*),
+         never from a React state variable — the panel's own state seeds from the
+         schema DEFAULT while the Host section is still 'loading', so a
+         state-derived `next` writes the wrong value to the durable section. That is
+         the same trap the upstream rows are written against. */
+      const setBgImageUrl = (value) => {
+        prefsSet(BG_IMAGE_URL_KEY, value)
+        syncBgImage()
+      }
+      const setNavBgImageUrl = (value) => {
+        prefsSet(NAV_BG_IMAGE_URL_KEY, value)
+        syncNavBgImage()
+      }
+      const toggleBgImage = () => {
+        const next = !isBgImageOn()
+        prefsSet(BG_IMAGE_ON_KEY, next ? '1' : '0')
+        if (next) syncBgImage()
+        else { bgImageTeardown(); syncBgImageActiveClass() }
+      }
+      const toggleNavBgImage = () => {
+        const next = !isNavBgImageOn()
+        prefsSet(NAV_BG_IMAGE_ON_KEY, next ? '1' : '0')
+        if (next) syncNavBgImage()
+        else navBgImageTeardown()
+      }
+      const setBgImageMask = (value) => {
+        const next = Math.min(BG_IMAGE_MASK_MAX, Math.max(BG_IMAGE_MASK_MIN, Math.round(Number(value))))
+        if (!Number.isFinite(next)) return
+        prefsSet(BG_IMAGE_MASK_KEY, String(next))
+        applyBgImageStyles()
+      }
+      const setNavBgImageOpacity = (value) => {
+        const next = Math.min(NAV_BG_IMAGE_OPACITY_MAX, Math.max(NAV_BG_IMAGE_OPACITY_MIN, Math.round(Number(value))))
+        if (!Number.isFinite(next)) return
+        prefsSet(NAV_BG_IMAGE_OPACITY_KEY, String(next))
+        applyNavBgImageStyles()
+      }
+      const setNavBgImageMask = (value) => {
+        const next = Math.min(NAV_BG_IMAGE_MASK_MAX, Math.max(NAV_BG_IMAGE_MASK_MIN, Math.round(Number(value))))
+        if (!Number.isFinite(next)) return
+        prefsSet(NAV_BG_IMAGE_MASK_KEY, String(next))
+        applyNavBgImageStyles()
+      }
+      const setBgImageFit = (value) => {
+        if (BG_IMAGE_FIT_OPTIONS.indexOf(value) === -1) return
+        prefsSet(BG_IMAGE_FIT_KEY, value)
+        applyBgImageStyles()
+      }
+      const setNavBgImageFit = (value) => {
+        if (NAV_BG_IMAGE_FIT_OPTIONS.indexOf(value) === -1) return
+        prefsSet(NAV_BG_IMAGE_FIT_KEY, value)
+        applyNavBgImageStyles()
+      }
+      const clearBgImage = () => {
+        prefsSet(BG_IMAGE_URL_KEY, '')
+        prefsSet(BG_IMAGE_ON_KEY, '0')
+        bgImageTeardown()
+        syncBgImageActiveClass()
+      }
+      const clearNavBgImage = () => {
+        prefsSet(NAV_BG_IMAGE_URL_KEY, '')
+        prefsSet(NAV_BG_IMAGE_ON_KEY, '0')
+        navBgImageTeardown()
+      }
+      /* A file picker writes a dataURL into the same field a pasted URL uses.
+         localStorage is not the backing store any more, so the quota that used to
+         bite here is now the schema section — a huge dataURL simply fails to
+         write, and the row says so rather than silently dropping the picture. */
+      const pickImageInto = (apply) => {
+        if (typeof document === 'undefined') return
+        const input = document.createElement('input')
+        /* The file picker is a convenience, not the feature: a host whose
+           createElement returns a stub (the test harness does) or that has no
+           FileReader must still be able to paste a URL by hand. Bail out
+           quietly instead of throwing on the click. */
+        if (!input || typeof input.addEventListener !== 'function') return
+        if (typeof FileReader === 'undefined') return
+        input.type = 'file'
+        input.accept = 'image/*'
+        input.addEventListener('change', () => {
+          const file = input.files && input.files[0]
+          if (!file) return
+          const reader = new FileReader()
+          reader.addEventListener('load', () => {
+            const data = typeof reader.result === 'string' ? reader.result : ''
+            if (data !== '') apply(data)
+          })
+          reader.readAsDataURL(file)
+        })
+        input.click()
+      }
+      const pickBgImageFile = () => pickImageInto(setBgImageUrl)
+      const pickNavBgImageFile = () => pickImageInto(setNavBgImageUrl)
+
+      const replayLoader = () => {
             loaderDone = false
             destroyLoader()
             runLoader()
@@ -501,6 +614,24 @@
             const next = !audioDiag
             prefsSet(AUDIO_DIAG_KEY, next ? '1' : '0')
             setAudioDiag(next)
+          }
+          /* LOCAL PATCH: 关闭 DSH 悬浮按钮的开关。Derived from the STORE on every
+             click, like every other toggle in this panel — see the long note above
+             the other handlers for why the rendered switch and the store are two
+             different reads. */
+          const toggleShutdownButton = () => {
+            const next = isShutdownButtonOn() ? '0' : '1'
+            /* prefsSet takes the FULL namespaced key, not the field name — the
+               field is derived from the key tail by prefsFieldOf. Passing
+               'shutdownButton' would write a key nothing reads back. */
+            prefsSet('dsh-theme-endfield-shutdown-button', next)
+            setShutdownButtonOn(next === '1')
+            /* syncShutdownButton() reads the pref store, so the write above is
+               what it acts on. This call is what makes the control appear NOW
+               instead of after an arbitrary reload: without it the switch saves
+               correctly and then looks broken, because the durable value flips
+               and nothing on screen reacts until the next page load. */
+            syncShutdownButton()
           }
           const applySoundDir = (value) => {
             const text = typeof value === 'string' ? value.trim() : ''
@@ -755,6 +886,91 @@
                   disabled: !wmOn,
                   title: wmOn ? '' : t('wmPersistNeedWm'),
                 }, t(wmPersist ? 'wmPersistOff' : 'wmPersistOn'))
+              ]),
+            ]),
+            /* --- LOCAL PATCH: 自定义背景图（上游无此组）--- */
+            R.createElement('div', { key: 'group-bgimage' }, [
+              groupTitle('02b', 'groupBg', false),
+              row('bg-image', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('bgImageRow') + t('sep') + stateOf(isBgImageOn()),
+                  R.createElement('span', { style: hintStyle }, t('bgImageUrlHint'))
+                ),
+                R.createElement('button', { type: 'button', onClick: toggleBgImage, style: btnStyleFor(isBgImageOn()) },
+                  t(isBgImageOn() ? 'bgImageOff' : 'bgImageOn'))
+              ]),
+              row('bg-image-url', true, [
+                R.createElement('span', { style: labelStyle }, t('bgImageUrlLabel')),
+                R.createElement('span', { style: { display: 'flex', gap: '8px', flex: '0 0 auto', alignItems: 'center' } },
+                  R.createElement('input', {
+                    type: 'text', value: readBgImageUrl(), placeholder: 'https://…',
+                    onChange: (e) => setBgImageUrl(e.target.value),
+                    style: {
+                      width: '220px', padding: '4px 8px', fontSize: '12px',
+                      color: 'var(--dsw-alias-label-primary)',
+                      background: 'var(--dsw-alias-bg-layer-1)',
+                      border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '0',
+                    },
+                  }),
+                  R.createElement('button', { type: 'button', onClick: pickBgImageFile, style: btnStyleFor(false, false) }, t('bgImagePick')),
+                  R.createElement('button', { type: 'button', onClick: clearBgImage, style: btnStyleFor(false, readBgImageUrl() === '') }, t('bgImageClear'))
+                )
+              ]),
+              row('bg-image-mask', false, [
+                R.createElement('span', { style: labelStyle }, t('bgImageMaskLabel') + t('sep') + readBgImageMask() + '%'),
+                R.createElement('input', {
+                  type: 'range', min: BG_IMAGE_MASK_MIN, max: BG_IMAGE_MASK_MAX, step: 1,
+                  value: readBgImageMask(), onChange: (e) => setBgImageMask(e.target.value),
+                  disabled: !isBgImageOn(),
+                })
+              ]),
+              row('bg-image-fit', false, [
+                R.createElement('span', { style: labelStyle }, t('bgImageFitLabel')),
+                R.createElement('span', { style: { display: 'flex', gap: '8px', flex: '0 0 auto' } },
+                  R.createElement('button', { type: 'button', onClick: () => setBgImageFit('cover'), style: btnStyleFor(readBgImageFit() === 'cover', !isBgImageOn()) }, t('bgImageFitCover')),
+                  R.createElement('button', { type: 'button', onClick: () => setBgImageFit('contain'), style: btnStyleFor(readBgImageFit() === 'contain', !isBgImageOn()) }, t('bgImageFitContain'))
+                )
+              ]),
+              row('nav-bg-image', false, [
+                R.createElement('span', { style: labelStyle },
+                  t('navBgImageRow') + t('sep') + stateOf(isNavBgImageOn()),
+                  R.createElement('span', { style: hintStyle }, t('navBgImageUrlHint'))
+                ),
+                R.createElement('button', { type: 'button', onClick: toggleNavBgImage, style: btnStyleFor(isNavBgImageOn()) },
+                  t(isNavBgImageOn() ? 'navBgImageOff' : 'navBgImageOn'))
+              ]),
+              row('nav-bg-image-url', false, [
+                R.createElement('span', { style: labelStyle }, t('bgImageUrlLabel')),
+                R.createElement('span', { style: { display: 'flex', gap: '8px', flex: '0 0 auto', alignItems: 'center' } },
+                  R.createElement('input', {
+                    type: 'text', value: readNavBgImageUrl(), placeholder: 'https://…',
+                    onChange: (e) => setNavBgImageUrl(e.target.value),
+                    style: {
+                      width: '220px', padding: '4px 8px', fontSize: '12px',
+                      color: 'var(--dsw-alias-label-primary)',
+                      background: 'var(--dsw-alias-bg-layer-1)',
+                      border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '0',
+                    },
+                  }),
+                  R.createElement('button', { type: 'button', onClick: pickNavBgImageFile, style: btnStyleFor(false, false) }, t('bgImagePick')),
+                  R.createElement('button', { type: 'button', onClick: clearNavBgImage, style: btnStyleFor(false, readNavBgImageUrl() === '') }, t('bgImageClear'))
+                )
+              ]),
+              row('nav-bg-image-opacity', false, [
+                R.createElement('span', { style: labelStyle }, t('navBgImageOpacityLabel') + t('sep') + readNavBgImageOpacity() + '%'),
+                R.createElement('input', {
+                  type: 'range', min: NAV_BG_IMAGE_OPACITY_MIN, max: NAV_BG_IMAGE_OPACITY_MAX, step: 1,
+                  value: readNavBgImageOpacity(), onChange: (e) => setNavBgImageOpacity(e.target.value),
+                  disabled: !isNavBgImageOn(),
+                })
+              ]),
+              row('nav-bg-image-mask', true, [
+                R.createElement('span', { style: labelStyle }, t('navBgImageMaskLabel') + t('sep') + readNavBgImageMask() + '%'),
+                R.createElement('input', {
+                  type: 'range', min: NAV_BG_IMAGE_MASK_MIN, max: NAV_BG_IMAGE_MASK_MAX, step: 1,
+                  value: readNavBgImageMask(), onChange: (e) => setNavBgImageMask(e.target.value),
+                  disabled: !isNavBgImageOn(),
+                })
               ]),
             ]),
             /* --- 03 动画：输出滚动动画 + 启动加载动画 --- */
@@ -1116,6 +1332,23 @@
                   )
                 ),
                 R.createElement('button', { type: 'button', onClick: toggleAudioDiag, style: btnStyleFor(audioDiag) }, t(audioDiag ? 'audioDiagOff' : 'audioDiagOn'))
+              ]),
+              /* ==== 06 系统（LOCAL PATCH：关机按钮）====
+                 Only one row, and it is a SWITCH, not the button itself. The
+                 control lives with the other floating surfaces (syncShutdownButton)
+                 because a button that ends the process has no business living in
+                 a settings form — the form configures, the surface acts. */
+              groupTitle('06', 'groupSystem', false),
+              row('shutdown-button', true, [
+                R.createElement('span', { style: labelStyle },
+                  t('shutdownRow') + t('sep') + stateOf(shutdownButtonOn),
+                  R.createElement('span', { style: hintStyle },
+                    shutdownNote !== '' ? shutdownNote : t(shutdownButtonOn ? 'shutdownHintOn' : 'shutdownHintOff')
+                  )
+                ),
+                R.createElement('button', {
+                  type: 'button', onClick: toggleShutdownButton, style: btnStyleFor(shutdownButtonOn)
+                }, t(shutdownButtonOn ? 'shutdownOff' : 'shutdownOn'))
               ]),
             ]),
           ])

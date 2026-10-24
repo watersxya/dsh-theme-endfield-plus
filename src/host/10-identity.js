@@ -57,11 +57,42 @@ const FIELD_DEFAULTS = {
   loader: '0',              // 启动加载动画 —— default off
   thunder: '0',             // 雷霆大字 —— default off
   thunderAnim: '0',         // 大字入场动画 —— default off
+  /* LOCAL PATCH (not upstream): 右下角「关闭 DSH」悬浮按钮.
+     The FIELD is the switch, never the action. A schema field meaning "shut the
+     process down" would be a stored value nobody can meaningfully read back, and
+     it would put a destructive capability behind a durable preference — the
+     switch only decides whether the control is shown; the click is what acts, and
+     the click is what asks the host.
+
+     Default OFF, like every opt-in surface here: an install must not sprout a
+     power button nobody asked for. */
+  shutdownButton: '0',      // 关闭 DSH 悬浮按钮 —— default off
   balanceCapsule: '0',      // 顶部余额胶囊 —— default off
   creditDisplay: 'remaining', // 渠道额度主读数 —— remaining（剩余）| used（已用）
   balanceCapsulePosition: 'center', // 余额胶囊位置 —— center（居中）| left（靠左）| right（靠右）
   balanceCapsuleSidebarHide: '0',   // 防遮挡：侧边栏展开自动隐藏 —— default off
   balanceCapsuleHoverHide: '1',     // 防遮挡：指针靠近自动隐藏 —— default on
+  // --- 自定义背景图（本地补丁）------------------------------------------------
+  // LOCAL PATCH (not upstream): the full-page + navigation-overlay background
+  // image feature. It exists only in the watersxya fork this install replaced;
+  // upstream main has no `url(` anywhere in client.js, so the feature has to
+  // travel as a patch. These nine fields are declared here so the values live in
+  // the same volatile Config as every other row — NOT in localStorage, which is
+  // exactly the transport upstream migrated away from (a localStorage-era field
+  // set by a Config-era build reads as a value that resets on the next load).
+  //
+  // Both layers ship OFF: a full-bleed image is opt-in decoration, and an
+  // install that gains these rows must not start painting a picture nobody
+  // asked for.
+  bgImageOn: '0',        // 整页背景图 —— default off
+  bgImageUrl: '',        // 全局整页背景图（URL / dataURL）—— empty
+  bgImageMask: '55',     // 背景图遮罩强度 0-90 —— 55%
+  bgImageFit: 'cover',   // 背景图填充方式 —— cover | contain
+  navBgImageOn: '0',     // 导航区背景图 —— default off
+  navBgImageUrl: '',     // 导航图（URL / dataURL）—— empty
+  navBgImageOpacity: '100', // 导航图不透明度 0-100 —— 100%
+  navBgImageMask: '65',  // 导航图遮罩强度 0-90 —— 65%
+  navBgImageFit: 'cover',// 导航图填充方式 —— cover | contain
   // --- 音频通知 ---------------------------------------------------------
   // Four live slots: the boot plate, the prompt that starts a turn, the final
   // answer that ends one, and `attention` for the two moments that actually

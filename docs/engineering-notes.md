@@ -53,7 +53,7 @@
 
 关键差异，逐条都有对应的防护：
 
-- **只有 `.volatile()` 字段可编辑。** `ctx.settings` 只把 volatile 路径投影成表单，写非 volatile 路径会直接报 `Config field "x" is not volatile`；整份 schema 一个 volatile 字段都没有时该条目**根本不出现**在设置里。所以 `index.js` 的 `Config` **34 个字段全部 `.volatile()`**，`test/settings-config-forms.test.js` 会逐字段断言这一点（漏一个就是「设置保存不了」的现代写法）。
+- **只有 `.volatile()` 字段可编辑。** `ctx.settings` 只把 volatile 路径投影成表单，写非 volatile 路径会直接报 `Config field "x" is not volatile`；整份 schema 一个 volatile 字段都没有时该条目**根本不出现**在设置里。所以 `index.js` 的 `Config` **44 个字段全部 `.volatile()`**，`test/settings-config-forms.test.js` 会逐字段断言这一点（漏一个就是「设置保存不了」的现代写法）。
 - **两个 schemastery 必须区分。** DSH 同时装了带 `.volatile()` 的 `@deepseek-ai/schemastery`（3.18.4）和不带它的旧 `schemastery`（3.18.0）。`index.js` 的 `loadSchemastery(true)` 会逐个候选检查 `.volatile` 是否真的存在，找不到就返回 `undefined`（本插件退化成无需配置，而不是挂一个假表单）。
 - **命名空间是 entry id，不是包名。** `theme-endfield` 这个串同时出现在 `cordis.patch.yml` 的 `id:`、`index.js` 的 `SETTINGS_ENTRY` 和 client 的 `PREFS_ENTRY`；三者由新测试交叉校验。client 另外会依次尝试 `include:` 前缀等几种安装别名，优先选真正被 Host served（`status:'ready'`）的那个拼写；一个都没 served 时先绑定首选拼写（表单只是共享镜像的懒视图，早绑定才能等到迟到的 section）。此后每次镜像重载都会让每个表单重新派生，`unavailable`→`ready` 的转变会把「另一个拼写被 served」通知过来，此时自动切过去；万一镜像只更新却不通知（表单快照存储丢弃等价快照），还有**有界 settle watch**（20 × 500ms）自己轮询兜底。两种情况下切换期间 held 的编辑都会补写到新拼写上。
 - **`settings.yaml` 已废弃。** DSH 启动时把已有的 `settings.yaml` 改名为 `settings.yaml.imported`，并只迁移 `LEGACY_SECTION_ENTRIES` 里那几段。旧的主题段落名 `dsh-theme-endfield` 不等于 entry id `theme-endfield`，因此**不在迁移之列**，需要用户在设置页重设一次；这是 DSH 侧的行为，不是本插件丢的。旧值仍留在 `settings.yaml.imported` 里可手工对照。

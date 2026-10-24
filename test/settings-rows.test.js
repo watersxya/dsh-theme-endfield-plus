@@ -162,12 +162,19 @@ const buttons = nodes.filter((n) => n.type === 'button')
    pointer auto-hide, credit readout) and the 11 audio rows. The count is
    asserted below against the rendered tree as well, so a row that exists in the
    page but not in this list still fails. */
-const ROW_KEYS = ['theme', 'palette', 'glass', 'radius', 'contour', 'contour-anim', 'contour-trail', 'contour-renderer', 'contour-fps', 'contour-speed', 'contour-scroll-pause', 'scroll-anim', 'scroll-anim-level', 'watermark', 'watermark-persist', 'loader', 'thunder', 'thunder-anim', 'balance-capsule', 'balance-capsule-position', 'balance-capsule-sidebar-hide', 'balance-capsule-hover-hide', 'credit-display', 'audio', 'audio-boot', 'audio-start', 'audio-done', 'audio-volume', 'audio-attention', 'audio-fail', 'audio-source', 'audio-dir', 'audio-human', 'audio-diag']
+const ROW_KEYS = ['theme', 'palette', 'glass', 'radius', 'contour', 'contour-anim', 'contour-trail', 'contour-renderer', 'contour-fps', 'contour-speed', 'contour-scroll-pause', 'scroll-anim', 'scroll-anim-level', 'watermark', 'watermark-persist',
+  /* LOCAL PATCH: 自定义背景图（上游无此组）*/
+  'bg-image', 'bg-image-url', 'bg-image-mask', 'bg-image-fit',
+  'nav-bg-image', 'nav-bg-image-url', 'nav-bg-image-opacity', 'nav-bg-image-mask',
+  'loader', 'thunder', 'thunder-anim', 'balance-capsule', 'balance-capsule-position', 'balance-capsule-sidebar-hide', 'balance-capsule-hover-hide', 'credit-display', 'audio', 'audio-boot', 'audio-start', 'audio-done', 'audio-volume', 'audio-attention', 'audio-fail', 'audio-source', 'audio-dir', 'audio-human', 'audio-diag',
+  /* LOCAL PATCH: 关闭 DSH. One row, and deliberately a SWITCH rather than the
+     control itself — the button is a floating surface, not a settings row. */
+  'shutdown-button']
 const rows = nodes.filter((n) => n.type === 'div' && n.props && ROW_KEYS.includes(n.props.key))
 const groups = (tree.children || []).filter((c) => c && c.type === 'div' && c.props && /^group-/.test(c.props.key))
 
-if (rows.length === 34) pass('panel has all 34 setting rows')
-else fail('expected 34 rows, found ' + rows.length)
+if (rows.length === 43) pass('panel has all 43 setting rows')
+else fail('expected 43 rows, found ' + rows.length)
 
 /* Count the rows the way the PAGE defines them — every direct child of a group
    container — so an unlisted new row shows up as a mismatch instead of vanishing. */
@@ -182,8 +189,8 @@ if (rowsInGroups.length === rows.length) {
     + rowsInGroups.map((r) => r.props.key).filter((k) => !ROW_KEYS.includes(k)).join(', '))
 }
 
-if (groups.length === 5) pass('rows are grouped into 5 sections (主题/背景/动画/娱乐/音频)')
-else fail('expected 5 group containers, found ' + groups.length)
+if (groups.length === 6) pass('rows are grouped into 6 sections (主题/背景/背景图/动画/娱乐/音频；06 系统标题附在音频组尾部)')
+else fail('expected 6 group containers, found ' + groups.length)
 
 const unkeyed = rows.filter((r) => !r.props || r.props.key === undefined)
 if (unkeyed.length === 0) pass('every row carries a React key')

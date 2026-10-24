@@ -1,16 +1,40 @@
-# dsh-theme-endfield
+# dsh-theme-endfield-plus
 
 参考《明日方舟：终末地》官网风格的 DSH Web 主题插件：奶油纸底、墨黑文字、信号黄／武陵青强调色、全直角工业编辑风。
 
 - **Client 侧**（`client.js`）：通过主题令牌与样式覆盖界面。
-- **Host 侧**（`index.js`）：设置持久化与可选的音频通知（派生系统播放器子进程）。
+- **Host 侧**（`index.js`）：设置持久化、可选的音频通知（派生系统播放器子进程）与「关闭 DSH 服务」桥。
 
 两侧都不修改应用自身代码。
+
+## 本仓库是上游的增强分支
+
+上游：[ymh0000123/dsh-theme-endfield](https://github.com/ymh0000123/dsh-theme-endfield)（原作者，本仓库基于 **v1.2.3** 重建）。
+
+| | 上游 v1.2.3 | 本仓库 |
+| --- | --- | --- |
+| 终末地视觉、等高线、水印、加载屏、雷霆大字、输出滚动动画 | ✅ | ✅ 原样继承 |
+| DSH 0.2 适配、Config 持久化、音频通知、余额／渠道额度胶囊 | ✅ | ✅ |
+| **自定义背景图（整页 + 导航区覆盖）** | ❌ | ✅ **本仓库独有** |
+| **右下角「关闭 DSH 服务」悬浮按钮** | ❌ | ✅ **本仓库独有** |
+
+本仓库版本号形如 `1.2.3-plus.N`：`1.2.3` 是它跟随的上游版本，`plus.N` 是本仓库自己的补丁序号。
+
+两项上游增量都标了 `LOCAL PATCH` 注释，分布在：`src/host/10-identity.js` 的 `FIELD_DEFAULTS`、`src/client/10-prefs-store.js` 的两张偏好表、`src/client/17-bg-image.js` 与 `src/client/40b-shutdown-button.js` 两个独立片段、`src/client/16-watermark.js` 里的 observer 接缝、`src/styles/theme.css` 末尾的图层样式。同步上游新版本时按这些接入点重放即可；上游的 `src/` 片段结构意味着同步走「重建 base + 重放补丁」，不是 git merge。
+
+**背景图**能力：
+
+- **整页背景图** —— 支持 URL / 本机图片（读成 dataURL），遮罩强度 `0–90%`（默认 55%），填充方式 填充 / 包含；
+- **导航区独立覆盖图** —— 单独开关与图片，另有**不透明度**（`0–100%`）与遮罩强度（默认 65%）；不开启时自动沿用整页背景图；
+- **两者接的是 DSH Config 而非 localStorage**，与上游的设置持久化体系一致，换端口、重启、DSH Desktop 均不丢；
+- 附带修复：左导航不再「hover 才显示背景、移开又变黑」；导航列表底部不再出现黑色渐隐条。
+
+**关闭 DSH 服务**：设置页「06 系统」里的开关（默认关闭）开启后，会话页右下角出现一个电源按钮，**点两下**（2.5 秒内确认）结束 DSH 进程，等同在该窗口按 Ctrl+C。它只结束 DSH 自己——走启动器提供的 `appExit`，没有任何通向关机、重启、注销系统的路径；启动器未提供 `appExit` 时按钮保持禁用并在设置页说明原因。
 
 ## 安装
 
 ```bash
-dsh plugin --profile web add github:ymh0000123/dsh-theme-endfield
+dsh plugin --profile web add github:watersxya/dsh-theme-endfield-plus
 ```
 
 重启或重新加载 `web` profile 后生效。卸载：
@@ -33,10 +57,11 @@ dsh plugin --profile web rm dsh-theme-endfield
 开关集中在 **设置 › 终末地主题设置**：
 
 - **主题**：总开关、谷地黄／武陵青配色、直角／圆角模式。
-- **背景**：等高线背景（默认关闭）及动态开关、`24 / 60 / 120 FPS`、速度 `1x / 2x / 4x`；可选鼠标轨迹（鼠标附近的等高线局部变形并逐渐恢复，默认关闭）；背景水印及持续显示。
+- **背景**：等高线背景（默认关闭）及动态开关、`24 / 60 / 120 FPS`、速度 `1x / 2x / 4x`；可选鼠标轨迹（鼠标附近的等高线局部变形并逐渐恢复，默认关闭）；背景水印及持续显示；**自定义背景图（本仓库独有）**——整页背景图与导航区独立覆盖图，各自的遮罩强度，导航区另有不透明度，填充方式填充／包含，支持 URL 与本机图片，默认关闭。
 - **动画**：输出滚动动画（默认开启，强度分 `柔和 / 标准 / 轻快`）——把模型流式输出的「整段跳一大格」摊成逐帧滑动，不改动应用自己的滚动位置，因此跟随不会中断，向上滚动、读者手势与系统「减少动态效果」下都保持瞬时；启动加载动画。
 - **娱乐**：雷霆大字及入场动画；顶部余额胶囊（默认关闭）。
 - **音频**：启动音、任务开始／结束音、需要回应时提示，音量与自定义音效目录可调（默认关闭）。
+- **系统（本仓库独有）**：右下角「关闭 DSH 服务」悬浮按钮的开关（默认关闭）；两下点击结束 DSH 进程，不动机器。
 
 几处需要单独说明的行为：
 
@@ -54,7 +79,7 @@ dsh plugin --profile web rm dsh-theme-endfield
 | 0.1.7 – 0.1.x | 同一套 Config／configForms 接缝 | 无需改动 |
 | ≤ 0.1.5 | `ctx.settings.register` + `ctx.settingsScope` | 自动回落，无需配置 |
 
-- **0.2.x / 0.1.7+**：Host `index.js` 导出一份 34 个字段全部 `.volatile()` 的 schemastery `Config`（命名空间 = 本插件 profile entry id `theme-endfield`），浏览器 `client.js` 通过 `ctx.configForms` 读写并订阅，值随 `<profile>/cordis.patch.yml` 落盘。
+- **0.2.x / 0.1.7+**：Host `index.js` 导出一份 44 个字段全部 `.volatile()` 的 schemastery `Config`（命名空间 = 本插件 profile entry id `theme-endfield`），浏览器 `client.js` 通过 `ctx.configForms` 读写并订阅，值随 `<profile>/cordis.patch.yml` 落盘。
 - **≤ 0.1.5**：回落到 `ctx.settings.register('dsh-theme-endfield', schema)` + `ctx.settingsScope`（`<dshHome>/settings.yaml`）。
 - 0.1.7 升级后旧设置需要在设置页重设一次（`settings.yaml` 已被 DSH 废弃，见 [engineering-notes.md § DSH 0.1.7-rc.1 换掉了整套 settings API](docs/engineering-notes.md#dsh-017-rc1-换掉了整套-settings-api-v110-已跟进)）。
 
@@ -121,7 +146,7 @@ src/contour-webgl.js    等高线 WebGL 源码（同上）
 client.js          Client 侧产物，由 src/client/ + src/styles/ 拼接而来
 index.js           Host 侧产物，由 src/host/ 拼接而来；package.json 的 main 与 exports["."] 都指向它
 scripts/           构建与门禁：lib/bundle-build.js 拼接器 + build-*.js 入口
-lib/               音频通知：槽位定义、WAV 合成与播放运行时
+lib/               音频通知：槽位定义、WAV 合成与播放运行时；system-bridge.js：「关闭 DSH 服务」宿主桥（LOCAL PATCH）
 locale/            插件卡片的展示文案（meta.title / meta.description）
 sounds/            生成的通知音（npm run sound:build 重新生成）
 cordis.patch.yml   Bundle 注入配置
@@ -151,6 +176,18 @@ screenshots.json   界面截图清单（对应 assets/ 下的 webp）
 ## 许可证
 
 MIT，仅覆盖本项目的原创代码；第三方素材的归属见[素材归属](#素材归属)。
+
+## 致谢
+
+本仓库的存在完全建立在 [@ymh0000123/dsh-theme-endfield](https://github.com/ymh0000123/dsh-theme-endfield) 之上。
+原仓库把「奶油纸底 + 墨黑文字 + 信号黄 + 全直角」这套工业编辑风实现得极其扎实，
+并为它写下了设计/工程文档、一套会抓静默错误的静态校验器，以及 45+ 项测试。
+本仓库只做了两件事：**把上游没有的自定义背景图与「关闭 DSH 服务」按钮以补丁形式带上**，
+其余部分尽量与上游一致，以便日后继续同步。
+
+若上游不接受这两个改动，最干净的走法是本仓库整体回退到纯上游版本——
+两项功能的所有代码都标了 `LOCAL PATCH`（含 `17-bg-image.js`、`40b-shutdown-button.js`、
+`lib/system-bridge.js` 三个整体文件），按标记删除即可复原。
 
 ## Star History
 

@@ -156,6 +156,9 @@ function bootClient(options) {
     getBoundingClientRect: () => ({ width: 0, height: 0, top: 0, left: 0 }),
     classList, className: '', parentNode: null, firstChild: null,
     hasAttribute: () => false, getAttribute: () => null, isConnected: true,
+    /* The shutdown control registers real listeners on its node; without these the
+       click that enables it throws instead of exercising the path. */
+    addEventListener() {}, removeEventListener() {}, dispatchEvent() { return true },
     getContext: () => null, appendData() {},
   })
   const document = {

@@ -67,3 +67,7 @@
 
 const { AudioRuntime, PREF, FALLBACK: AUDIO_FALLBACK, LOG_TAG } = require('./lib/audio.js');
 const { SLOT_IDS } = require('./lib/slots.js');
+/* LOCAL PATCH (not upstream): the "close DSH" control. Its host half is small on
+   purpose — it calls the launcher's `appExit` and nothing else, so the plugin can
+   end the process it runs inside and has no path to the machine itself. */
+const { registerSystemBridge, resolveAppExit, canShutdown, SYSTEM_ROUTE } = require('./lib/system-bridge.js');

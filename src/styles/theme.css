@@ -517,6 +517,175 @@
       }
       /* The composer card never gets a backdrop-filter in any tier or media state
          (fixed-descendant containing block — see the WHY comment above). */
+      /* ================= LOCAL PATCH: custom background image =================
+         Not part of upstream: the full-page sheet plus the navigation-column
+         overlay, and the four fixes that keep the nav from flickering black.
+         The image/fit/scrim values arrive as custom properties written from
+         JS (---edge-bg-mask / ---edge-bg-fit / ---edge-nav-mask / ---edge-nav-fit),
+         so this sheet only owns geometry and the mount-time guards. The scrim
+         washes the image toward the app's own bg-base rather than a fixed
+         black/white veil, because the app's text is designed against that
+         base — that is what keeps both schemes readable. */
+      /* ================= custom background image =================
+         Same mounting contract as the contour sheet: an inset:0 / z-index:0 child
+         of the app frame, painted above the frame's own background and below every
+         positioned descendant. The background-size/fit and scrim strength are set
+         as CSS custom properties from JS so the stylesheet only owns geometry.
+
+         The scrim uses the app's own bg-base rather than a fixed black/white veil,
+         because the app's text colours are designed against that base: washing the
+         image toward it keeps both light and dark UI readable. The user controls
+         the wash strength via the settings slider (---edge-bg-mask). */
+      [data-endfield-bg-image] {
+        position: absolute;
+        inset: 0;
+        /* 0 + the frame-child lift rule below puts this layer above the frame's
+           own background but behind the real content, without needing an
+           isolation/stacking-context trap on the frame. */
+        z-index: 0;
+        pointer-events: none;
+        overflow: hidden;
+        background-position: center;
+        background-repeat: no-repeat;
+        background-size: var(--edge-bg-fit, cover);
+      }
+      /* The scrim is a separate absolutely-positioned layer, not the wrapper's own
+         background: the wrapper's background is the image itself, so the veil has
+         to paint on top of it. Pointer events stay off on both. */
+      [data-endfield-bg-image]::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: color-mix(in srgb, var(--dsw-alias-bg-base) var(--edge-bg-mask, 55%), transparent);
+      }
+      /* The same descendant transparency rules as the contour sheet. They are kept
+         as separate selectors so either layer alone works; when both are mounted the
+         declarations are identical, so the later rule is a no-op re-statement. */
+      [class*='_frame']:has(> [data-endfield-bg-image]) {
+        background: transparent !important;
+      }
+      /* Lift the three layout columns above the background layer. This keeps
+         the image behind content without creating an isolation/stacking-context
+         trap on the frame (which would break fixed-position descendants such as
+         the full-screen settings overlay). Handles/overlays already carry their
+         own higher z-index and are left untouched. */
+      [class*='_frame']:has(> [data-endfield-bg-image]) > [class$='_sidebarCol'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) > [class$='_centerCol'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) > [class$='_rightbarCol'],
+      [class$='_detailsCol'] {
+        position: relative;
+      }
+      /* The fork also carried two hash-pinned module selectors here
+         ([class*='wSkVaW_root'] / [class*='ydkMvW_root']). They are DROPPED on
+         purpose: CSS-module class names carry the build hash, so they die
+         silently on the next app rehash, and 0.2 has already renamed both
+         surfaces. test/selector-guard.test.js fails if they come back. The
+         layout-column rules above cover the same containers by stable
+         class-suffix selectors. */
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_sidebarCol'] {
+        background: transparent !important;
+      }
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_sidebarCol'] [class$='_root'] {
+        background: transparent !important;
+      }
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_centerCol'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_rightbarCol'],
+      [class$='_detailsCol'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_rightbarCol'],
+      [class$='_detailsCol'] [class$='_root'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) [data-phase] {
+        background: transparent !important;
+      }
+      [class*='_frame']:has(> [data-endfield-bg-image]) [class$='_composerSeat'],
+      [class*='_frame']:has(> [data-endfield-bg-image]) [data-composer-seat] {
+        background: linear-gradient(180deg,
+          rgba(0, 0, 0, 0) 0px,
+          color-mix(in srgb, var(--dsw-alias-bg-base) 82%, transparent) 36px) !important;
+      }
+      /* Stable body-class transparency: the global image layer owns a body class
+         (theme-endfield-bg-on) while it is active. These rules keep the sidebar,
+         conversation and details columns transparent without relying on transient
+         :has()/hover state, which is what caused the nav to only reveal the image
+         on hover. */
+      body.theme-endfield-bg-on [class*='_frame'] {
+        background: transparent !important;
+      }
+      body.theme-endfield-bg-on [class*='_frame'] > [class$='_sidebarCol'],
+      body.theme-endfield-bg-on [class*='_frame'] > [class$='_centerCol'],
+      body.theme-endfield-bg-on [class*='_frame'] > [class$='_rightbarCol'],
+      [class$='_detailsCol'] {
+        position: relative;
+      }
+      body.theme-endfield-bg-on [class$='_sidebarCol'],
+      body.theme-endfield-bg-on [class$='_sidebarCol'] [class$='_root'],
+      body.theme-endfield-bg-on [class$='_centerCol'],
+      body.theme-endfield-bg-on [class$='_rightbarCol'],
+      [class$='_detailsCol'],
+      body.theme-endfield-bg-on [class$='_rightbarCol'],
+      [class$='_detailsCol'] [class$='_root'],
+      body.theme-endfield-bg-on [data-phase] {
+        background: transparent !important;
+      }
+      /* The workspace list bottom fade otherwise ends at the opaque sidebar
+         fill and shows as a black bar above the footer/balance under a
+         background image. Make it fade to transparent too. */
+      body.theme-endfield-bg-on [class$='_sidebarCol'] {
+        --dsw-specific-sidebar-fill: transparent;
+      }
+      body.theme-endfield-bg-on [class*='_fade'] {
+        background: linear-gradient(to bottom, transparent, transparent) !important;
+      }
+      body.theme-endfield-bg-on [class$='_composerSeat'],
+      body.theme-endfield-bg-on [data-composer-seat] {
+        background: linear-gradient(180deg,
+          rgba(0, 0, 0, 0) 0px,
+          color-mix(in srgb, var(--dsw-alias-bg-base) 82%, transparent) 36px) !important;
+      }
+      /* ================= navigation overlay background image =================
+         An optional second image layer that covers only the left navigation /
+         sidebar column. The sidebar column is not positioned by default, so it
+         is made relative only while this layer is mounted. The sidebar shell's
+         root owns an opaque fill, so it must be opened up for the overlay to be
+         visible; its own opacity and scrim are handled from JS/CSSOM. */
+      [data-endfield-nav-bg-image] {
+        position: absolute;
+        inset: 0;
+        /* 0 + the sidebar-child lift rule below keeps this overlay behind the
+           sidebar content without needing isolation on the sidebar column. */
+        z-index: 0;
+        pointer-events: none;
+        overflow: hidden;
+        background-position: center;
+        background-repeat: no-repeat;
+        background-size: var(--edge-nav-fit, cover);
+      }
+      [data-endfield-nav-bg-image]::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: color-mix(in srgb, var(--dsw-alias-bg-base) var(--edge-nav-mask, 65%), transparent);
+      }
+      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) {
+        /* Relative is needed as the containing block for the absolute overlay;
+           it does not trap fixed-position descendants the way transform/filter
+           would, so the full-screen settings overlay stays clickable. */
+        position: relative;
+        --dsw-specific-sidebar-fill: transparent;
+        background: transparent !important;
+      }
+      /* Lift the sidebar shell above the navigation overlay. Other direct
+         children, if any, keep their own stacking behavior. */
+      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) > [class$='_root'] {
+        position: relative;
+      }
+      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class$='_root'] {
+        background: transparent !important;
+      }
+      [class$='_sidebarCol']:has(> [data-endfield-nav-bg-image]) [class*='_fade'] {
+        background: linear-gradient(to bottom, transparent, transparent) !important;
+      }
       ::selection {
         color: #000;
         background: var(--edge-signal, var(--edge-accent));

@@ -52,6 +52,20 @@
       // Same for the balance capsule: its poll and its node both live inside the
       // themed page, and its styles were just torn down with the sheet above.
       destroyBalanceCapsule()
+      /* LOCAL PATCH: And the shutdown button. This one is not cosmetic cleanup:
+         the control ends a running process, so leaving it on an un-themed page
+         would put a live "close DSH" button on a page whose theme is off — and a
+         user who turned the theme off should not still be able to end the service
+         from the leftover node. */
+      shutdownButton.destroy()
+      /* LOCAL PATCH: and the two background layers, whose geometry lives in the
+         sheet just removed — an orphaned wrapper would sit there as a raw div
+         carrying a background image. The body class goes with them. */
+      bgImageTeardown()
+      navBgImageTeardown()
+      if (typeof document !== 'undefined' && document.body !== null) {
+        document.body.classList.remove(BG_ACTIVE_CLASS)
+      }
     }
 
     if (isEnabled()) {
@@ -76,6 +90,11 @@
       // 顶部余额胶囊: mounts only while its own switch is on, and polls the
       // host-side balance route only while mounted.
       syncBalanceCapsule()
+      /* LOCAL PATCH: the shutdown control is a surface like the watermark and
+         the capsule, so it is synced here — AFTER mount() has put the sheet in,
+         because it reads --edge-paper / --edge-accent from that sheet and would
+         otherwise paint itself with the fallback literals for its first paint. */
+      syncShutdownButton()
     }
 
     /* Live preference reconciler. The namespace scope subscription in the store
@@ -112,6 +131,13 @@
         syncAudioAttentionWatch()
         // Same reason: it re-reads its switch and mounts or removes the capsule.
         syncBalanceCapsule()
+        /* LOCAL PATCH: And the shutdown control. Its absence here is why the
+           switch could read "on" with no button on screen: a settings write
+           lands in the DURABLE store, and this reconciler is the only thing
+           that re-derives surfaces from it. Mounting the control in apply()
+           covered page load and nothing else, so the one path a real user
+           takes — flip the switch — never reached it. */
+        syncShutdownButton()
       } else {
         // Switched off mid-session: the watcher must not keep polling a page the
         // theme no longer owns.
@@ -119,5 +145,10 @@
         // And the capsule must not keep polling the balance route on an unthemed
         // page — destroyBalanceCapsule also clears its interval.
         destroyBalanceCapsule()
+        // LOCAL PATCH: same reasoning for the shutdown control: a page whose
+        // theme is off must not be carrying a live button that ends the process.
+        // Routed through the same helper as the enabled branch so the two paths
+        // cannot drift.
+        syncShutdownButton()
       }
     }

@@ -8,7 +8,7 @@
 
 历史内存风格：这些开关最初存浏览器 `localStorage`。由于浏览器存储按「协议 + 主机 + 端口」的 origin 隔离，而 DSH Desktop 每次启动都在 127.0.0.1 绑定一个**随机临时端口**，端口一变 origin 就变，上次保存的设置永远读不到，表现为「重启后恢复默认」。已改用 DSH 官方的用户设置命名空间：
 
-- **DSH 0.2.0-rc.2 / 0.1.7-rc.1 及以后（当前）**：**Host 端（index.js）** 导出 schemastery `Config`，34 个字段全部 `.volatile()`——这两代都只把 volatile 字段投影成可编辑表单；命名空间就是本插件在 `cordis.patch.yml` 里那一行的 profile entry id（`theme-endfield`）。**浏览器端（client.js）** 用 `ctx.configForms.get('theme-endfield')` 读/写/订阅，值由 DSH 的设置服务写进 profile patch `<profile>/cordis.patch.yml`。另外 Host 会调用 `ctx.settings.configure({ auto: false }, ctx.fiber)` 告诉 DSH 本插件自带设置页，不要再自动生成一份。0.2 的这套接缝与 0.1.7 完全相同，本插件侧不需要改动；0.2 真正改掉的是三个**应用侧**细节（回合状态标签的类名与着色机制、右侧栏列名、插件卡片文案来源），见 [engineering-notes.md § DSH 0.2.0-rc.2](engineering-notes.md#dsh-020-rc2-上失效的三处应用侧钩子v116-已跟进)。
+- **DSH 0.2.0-rc.2 / 0.1.7-rc.1 及以后（当前）**：**Host 端（index.js）** 导出 schemastery `Config`，44 个字段全部 `.volatile()`——这两代都只把 volatile 字段投影成可编辑表单；命名空间就是本插件在 `cordis.patch.yml` 里那一行的 profile entry id（`theme-endfield`）。**浏览器端（client.js）** 用 `ctx.configForms.get('theme-endfield')` 读/写/订阅，值由 DSH 的设置服务写进 profile patch `<profile>/cordis.patch.yml`。另外 Host 会调用 `ctx.settings.configure({ auto: false }, ctx.fiber)` 告诉 DSH 本插件自带设置页，不要再自动生成一份。0.2 的这套接缝与 0.1.7 完全相同，本插件侧不需要改动；0.2 真正改掉的是三个**应用侧**细节（回合状态标签的类名与着色机制、右侧栏列名、插件卡片文案来源），见 [engineering-notes.md § DSH 0.2.0-rc.2](engineering-notes.md#dsh-020-rc2-上失效的三处应用侧钩子v116-已跟进)。
 - **≤ 0.1.5-rc.2（旧宿主，仍兼容）**：Host 通过 `ctx.settings.register('dsh-theme-endfield', schema)` 声明命名空间，由 `@deepseek-ai/dsh-settings-file` 落到 `<dshHome>/settings.yaml`；浏览器端用 `ctx.settingsScope` 的 `bind({ namespace, decode })` 读写。client 在找不到 `configForms` 时自动回落到这条路径。
 
 两代的落盘位置都由 DSH 决定（`$DSH_HOME` 或 `~/.dsh/...`），与浏览器 origin/端口无关，因此在 **dsh web（浏览器、固定/默认端口）** 和 **DSH Desktop（随机临时端口）** 两种运行方式下设置都能正确持久化——它们跑的都是 127.0.0.1 loopback 页面，DSH 会把连接解析为 `host` 持久化模式。
@@ -36,6 +36,15 @@
 | | 滚动暂停 | 开 | `contourScrollPause` |
 | | 背景水印 | 开 | `watermark` |
 | | 水印保持显示 | 关 | `watermarkPersist` |
+| 02b 背景图（LOCAL PATCH） | **自定义背景图** | 关 | `bgImageOn` |
+| | 背景图（URL / dataURL） | 空 | `bgImageUrl` |
+| | 背景图遮罩强度 | 55% | `bgImageMask` |
+| | 背景图填充方式 | 填充 | `bgImageFit` |
+| | **导航区背景图** | 关 | `navBgImageOn` |
+| | 导航图（URL / dataURL） | 空 | `navBgImageUrl` |
+| | 导航图不透明度 | 100% | `navBgImageOpacity` |
+| | 导航图遮罩强度 | 65% | `navBgImageMask` |
+| | 导航图填充方式 | 填充 | `navBgImageFit` |
 | 03 动画 | 输出滚动动画 | 开 | `scrollAnim` |
 | | 动画强度 | 标准 | `scrollAnimLevel` |
 | | 启动加载动画 | 关 | `loader` |
@@ -57,6 +66,7 @@
 | | 开始音仅认会话框 | 开 | `audioHumanOnly` |
 | | 自定义音效目录 | （空） | `audioSoundDir` |
 | | 诊断日志 | 关 | `audioDiag` |
+| 06 系统（LOCAL PATCH） | **关闭 DSH 悬浮按钮** | 关 | `shutdownButton` |
 
 开启后默认显示 DeepSeek API 钱包余额与峰谷时段；会话使用 dsh-codearts-auth 渠道模型时自动切换为该渠道的剩余额度与积分消耗（详见「04 娱乐 › 顶部余额胶囊 › 渠道额度模式」）。
 
@@ -124,6 +134,51 @@
 开启后，对话页等非新建会话页面也显示水印。
 
 此时水印挂载在**会话列内部**，以 `z-index: -1` 位于正文**之下**（该列在水印挂载期间获得 `isolation: isolate` 与 `position: relative`，卸载后自动还原）。之所以不挂 `<body>`：一个 fixed 的 body 子节点会画在消息文字**之上**，把用户正在读的内容洗白。
+
+### 自定义背景图（LOCAL PATCH · 本仓库独有，默认关闭）
+
+> 上游主线**没有**这个功能（其 `src/client` 全文无背景图分区）。
+> 它源自本仓库的 fork 时期，上游从未合并，故以补丁形式随附；
+> 代码集中在 `src/client/17-bg-image.js` 与 `src/styles/theme.css` 末尾的图层样式。
+
+背景图分成两个独立模块：**全局整页背景图** 与 **导航区覆盖背景图**。
+两者都支持 URL 或本机图片（浏览器读成 dataURL），也支持从本机选取图片文件。
+
+**全局整页背景图**
+
+- 图层挂在应用外框内 `inset:0; z-index:0`，铺满整个界面底层，**包含左侧导航区**；
+- 挂载期间会把外框、导航/侧栏、中列、详情列与会话根的底色置为透明；
+- 遮罩强度（`0–90%`）默认 `55%`：用 `color-mix` 把背景图向应用底色靠拢，保持亮/暗两种界面下的文字可读性；
+- 填充方式支持**填充**（cover，默认）与**包含**（contain）；
+- 挂载期间持有稳定的 body class `theme-endfield-bg-on`——
+  这是「左导航不再依赖 hover 才显示背景、移开鼠标又变回黑底」的关键：
+  透明度由这个 class 拥有，而不是靠瞬时的 `:has()`/hover 状态。
+
+**导航区覆盖背景图**
+
+- 独立开关，默认关闭；关闭时**根本不挂载图层**，左导航自然显示全局整页背景图；
+- 开启后只在左导航/侧栏列（`sidebarCol`）内覆盖一张独立背景图；
+- 拥有独立控制：
+  - **不透明度**（`0–100%`）默认 `100%`：`0` 时完全透明（透出整页背景），`100` 时完全显示导航图；
+  - **遮罩强度**（`0–90%`）默认 `65%`：把导航图向界面底色靠拢，保证「新会话/设置」等文字可读；
+  - **填充方式**：填充（默认）/ 包含；
+- 导航列表底部的 `.fade` 渐隐层在背景图开启时改为透明终点，不再出现黑色横条。
+
+**与设置持久化的关系**
+
+九个字段全部接在 DSH 的 volatile Config 上（命名空间 `theme-endfield`），
+**不使用 localStorage**——那正是上游刚迁走的旧传输。把背景图留在 localStorage
+会退回「开关刷新后复位」那个坑，所以移植时必须一并接进
+`src/host/10-identity.js` 的 `FIELD_DEFAULTS`、`src/client/10-prefs-store.js`
+的 `PREFS_FIELD_DEFAULTS` / `PREFS_KEY_TO_FIELD` 与 `test/fixtures/settings-scope.js`，
+`test/settings-namespace.test.js` 钉住三处不得漂移。
+
+**图层重挂载时机**：两个图层挂在与等高线图层同一个 `MutationObserver` 上
+（`bgImageSyncHook` / `navBgImageSyncHook`，接缝声明在 `src/client/16-watermark.js`），
+因为应用外框在启动期才创建、部分路由切换时会被替换。
+
+**0.2 兼容**：右栏类名在 0.2 由 `_detailsCol` 改为 `_rightbarCol`，
+补丁的选择器两者并存，在 0.1.x 与 0.2 上都能工作。
 
 ---
 
@@ -266,6 +321,22 @@
 
 **总开关 `audioEnabled` 默认关闭**：音效是选择加入（opt-in）的功能，升级到带本功能的版本不会自己开始出声；
 打开总开关后，各槽位开关（默认开启）决定具体哪几种情形响，音量只缩放提示音本身、不改系统音量。
+
+---
+
+## 06 系统（LOCAL PATCH · 本仓库独有）
+
+### 关闭 DSH 悬浮按钮（默认关闭）
+
+设置页「06 系统」的开关只决定**是否显示按钮**；按钮本身不是设置行，而是与会话栏、水印并列的悬浮面（`src/client/40b-shutdown-button.js`），出现在**会话页**右下角。
+
+- **两下点击**：第一下把按钮上膛（accent 实心底、2.5 秒窗口），第二下才真正发请求；超时自动解除。一个能结束进程的控件不值得一记误触。
+- **只结束 DSH 进程，不动机器**：页面 POST `/theme-endfield/system/shutdown`（`lib/system-bridge.js`），宿主调用启动器提供的 `appExit`——等同在该窗口按 Ctrl+C（退出码 130）。它**不**关机、不重启、不注销，也没有任何通向这些操作的路径（不走 `shutdown.exe` / `Stop-Computer`）。
+- **能力探测逐次进行**：`appExit` 由启动器提供、不是宿主框架，挂载顺序插件控制不了；缓存一次的探测可能永远停在「没有」。页面挂载与每次同步都 GET `/theme-endfield/system` 复核；不可用时按钮禁用并给出原因，而不是装出一个点了没反应的按钮。
+- **只在会话页出现**：DSH 没有路由，插件页是同文档内的覆盖层。控件以 `[class*="centerCol"] [class*="_root"][data-phase]`（含 hero/active/settling 三态）为会话页标记，并排除 `data-dsh-novelforge-active` 等兄弟面板的激活属性；`MutationObserver` 观察这两处，切换面板即时挂载或摘除。
+- **主题关闭即摘除**：`unmount()` 与总开关关闭路径都会 `shutdownButton.destroy()`——主题关了，一个能结束进程的活动按钮不该留在页面上。
+
+回归测试：`test/system-bridge.test.js`（宿主侧路由与 appExit 契约）、`test/shutdown-button.test.js`（悬浮面生命周期：latch 缺陷、开关即时反应、页面门控）、`test/shutdown-button-appearance.test.js`（外观回归：暗底不可见、幻影令牌 `--edge-ink`、尺寸与 !important 对抗）。
 
 ---
 

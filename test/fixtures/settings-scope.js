@@ -74,6 +74,20 @@ const FIELD_DEFAULTS = {
   balanceCapsulePosition: 'center',
   balanceCapsuleSidebarHide: '0',
   balanceCapsuleHoverHide: '1',
+  /* LOCAL PATCH: 自定义背景图 — must mirror index.js FIELD_DEFAULTS. */
+  bgImageOn: '0',
+  bgImageUrl: '',
+  bgImageMask: '55',
+  bgImageFit: 'cover',
+  navBgImageOn: '0',
+  navBgImageUrl: '',
+  navBgImageOpacity: '100',
+  navBgImageMask: '65',
+  navBgImageFit: 'cover',
+  /* LOCAL PATCH: 关闭 DSH —— 必须与 index.js FIELD_DEFAULTS 和
+     client.js PREFS_FIELD_DEFAULTS 三处一致。缺任一张表，开关就读到
+     undefined，`=== '1'` 永远为 false（这就是那张表的用途）。 */
+  shutdownButton: '0',
   /* 音频通知 — same defaults as index.js FIELD_DEFAULTS. These names are already
      camelCase schema fields, so they pass through fieldName() unchanged; they are
      listed here so the fixture stays a faithful projection of the host schema
@@ -117,6 +131,18 @@ const KEY_TO_FIELD = {
   'dsh-theme-endfield-balance-capsule-position': 'balanceCapsulePosition',
   'dsh-theme-endfield-balance-capsule-sidebar-hide': 'balanceCapsuleSidebarHide',
   'dsh-theme-endfield-balance-capsule-hover-hide': 'balanceCapsuleHoverHide',
+  /* LOCAL PATCH: 自定义背景图 */
+  'dsh-theme-endfield-bg-image-on': 'bgImageOn',
+  'dsh-theme-endfield-bg-image-url': 'bgImageUrl',
+  'dsh-theme-endfield-bg-image-mask': 'bgImageMask',
+  'dsh-theme-endfield-bg-image-fit': 'bgImageFit',
+  'dsh-theme-endfield-nav-bg-image-on': 'navBgImageOn',
+  'dsh-theme-endfield-nav-bg-image-url': 'navBgImageUrl',
+  'dsh-theme-endfield-nav-bg-image-opacity': 'navBgImageOpacity',
+  'dsh-theme-endfield-nav-bg-image-mask': 'navBgImageMask',
+  'dsh-theme-endfield-nav-bg-image-fit': 'navBgImageFit',
+  /* LOCAL PATCH: 关闭 DSH */
+  'dsh-theme-endfield-shutdown-button': 'shutdownButton',
   /* Audio rows: the tail already equals the schema field, but the mapping is
      asserted to cover EVERY declared field, so they are listed like the rest. */
   'dsh-theme-endfield-audio-enabled': 'audioEnabled',

@@ -16,6 +16,15 @@
     const AUDIO_STATE_URL = '/theme-endfield/audio/state'
     const AUDIO_PREVIEW_URL = '/theme-endfield/audio/preview'
     const AUDIO_ATTENTION_URL = '/theme-endfield/audio/attention'
+    /* ---------- 关闭 DSH（LOCAL PATCH）----------
+       The page cannot end the process that is serving it, so both the capability
+       probe and the action are host routes. Same arrangement as the audio and
+       balance bridges, and for the same reason: the browser has no access to the
+       process on the other side of the socket. */
+    const SYSTEM_STATE_URL = '/theme-endfield/system'
+    const SHUTDOWN_URL = '/theme-endfield/system/shutdown'
+    const SHUTDOWN_BUTTON_KEY = 'shutdownButton'
+    const isShutdownButtonOn = () => prefsGet(SHUTDOWN_BUTTON_KEY) === '1'
     /* ---------- 顶部余额胶囊 (host half owns the balance query) ----------
        The page cannot reach the account service itself — only Host consumers
        can obtain the request credential — so the capsule polls the host-side

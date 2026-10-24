@@ -96,6 +96,27 @@
          /theme-endfield/balance route. Ships OFF so an upgrade never adds a
          floating element the user did not ask for. */
       balanceCapsule: '0',
+      /* LOCAL PATCH (not upstream): 自定义背景图. Two independent layers — a
+         global full-page sheet and an optional navigation-column overlay. The
+         upstream tree has no background-image feature at all, so these nine rows
+         mirror the host FIELD_DEFAULTS in index.js. Both layers ship OFF. */
+      bgImageOn: '0',
+      bgImageUrl: '',
+      bgImageMask: '55',
+      bgImageFit: 'cover',
+      navBgImageOn: '0',
+      navBgImageUrl: '',
+      navBgImageOpacity: '100',
+      navBgImageMask: '65',
+      navBgImageFit: 'cover',
+      /* LOCAL PATCH (not upstream): 关闭 DSH 悬浮按钮. This field must be
+         listed here AND in PREFS_KEY_TO_FIELD below — a field present in one
+         table but absent from the other reads as `undefined`, and `=== '1'`
+         against undefined is permanently false. That is the exact failure this
+         pair of tables exists to prevent: the switch renders, the value saves,
+         and nothing ever turns on. test/settings-namespace.test.js guards the
+         two tables against drifting apart. */
+      shutdownButton: '0',
       /* 渠道额度胶囊的右侧百分比读数选「已用」还是「剩余」——两个值都有真实语义，
          不存在默认就错的答案，所以默认 used（与插件自身徽章一致的读法）。
          仅影响 credits 模式的右侧百分比槽位；左侧主数字始终为剩余额度。 */
@@ -194,6 +215,25 @@
       'dsh-theme-endfield-balance-capsule-position': 'balanceCapsulePosition',
       'dsh-theme-endfield-balance-capsule-sidebar-hide': 'balanceCapsuleSidebarHide',
       'dsh-theme-endfield-balance-capsule-hover-hide': 'balanceCapsuleHoverHide',
+      /* LOCAL PATCH: 自定义背景图. Compound tails DO NOT equal their schema
+         fields, so these must be listed — the prefix-strip fallback would turn
+         'dsh-theme-endfield-bg-image-on' into 'bgImageOn' by luck here, but
+         'nav-bg-image-on' only resolves because it is written out below rather
+         than derived. Listing all nine keeps the table complete, which
+         test/settings-namespace.test.js asserts for every declared host field. */
+      'dsh-theme-endfield-bg-image-on': 'bgImageOn',
+      'dsh-theme-endfield-bg-image-url': 'bgImageUrl',
+      'dsh-theme-endfield-bg-image-mask': 'bgImageMask',
+      'dsh-theme-endfield-bg-image-fit': 'bgImageFit',
+      'dsh-theme-endfield-nav-bg-image-on': 'navBgImageOn',
+      'dsh-theme-endfield-nav-bg-image-url': 'navBgImageUrl',
+      'dsh-theme-endfield-nav-bg-image-opacity': 'navBgImageOpacity',
+      'dsh-theme-endfield-nav-bg-image-mask': 'navBgImageMask',
+      'dsh-theme-endfield-nav-bg-image-fit': 'navBgImageFit',
+      /* LOCAL PATCH: 关闭 DSH 悬浮按钮. Written out rather than derived — the
+         compound tail 'shutdown-button' is not the field name 'shutdownButton',
+         so the prefix-strip fallback below would get this one wrong. */
+      'dsh-theme-endfield-shutdown-button': 'shutdownButton',
       /* 音频通知. These tails happen to equal their schema fields, so every one of
          them would also resolve correctly through the prefix-strip fallback — they
          are listed explicitly because test/settings-namespace.test.js asserts that
